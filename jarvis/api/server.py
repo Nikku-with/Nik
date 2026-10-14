@@ -6,7 +6,7 @@ Endpoints:
   GET  /                → web console (single-file HTML, inline CSS/JS — preview-safe)
   POST /chat            → {message, session_id} → answers (LangGraph supervisor)
   POST /task            → raw graph run + poora state JSON
-  GET  /stream?message= → Server-Sent Events: live node-by-node progress
+  GET  /stream?message= → Server-Sent Events: live node-by-node progress + thinking feed
   GET  /health          → provider / tools / browser / memory status
   GET  /notes           → saved notes list
   GET  /graph           → mermaid + ASCII architecture

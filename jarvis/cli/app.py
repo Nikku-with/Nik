@@ -8,6 +8,7 @@ Polished terminal UI: status panel, activity log, slash commands, aur seedha Hin
     /help  /status  /mode  /voice  /text  /model  /provider  /tools  /memory  /settings
     /refresh  /clear  /stop  /restart  /automation  /skills  /doctor  /quit
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -51,10 +52,16 @@ def _status_dict() -> dict[str, Any]:
     st = agent_status(compact=True)
     return {
         "status": "ONLINE" if not st["offline"] else "OFFLINE / DEMO",
-        "provider": st["provider"], "model": st["model"], "mode": st["mode"],
-        "memory": st["memory"], "tools": f"{st.get('tool_count', '?')} enabled",
-        "browser": st["browser"], "livekit": st["livekit"], "telegram": st["telegram"],
-        "automations": st["automations"], "workspace": st["workspace"],
+        "provider": st["provider"],
+        "model": st["model"],
+        "mode": st["mode"],
+        "memory": st["memory"],
+        "tools": f"{st.get('tool_count', '?')} enabled",
+        "browser": st["browser"],
+        "livekit": st["livekit"],
+        "telegram": st["telegram"],
+        "automations": st["automations"],
+        "workspace": st["workspace"],
     }
 
 
@@ -94,24 +101,30 @@ async def handle_command(line: str, session_id: str) -> bool:
 
             ui.cprint(skills_prompt_block(tail) or "📦 koi SKILL.md nahi mila", ui.ACCENT)
 
-        ok = pro_ui.key_menu("🎛️  NIKHILAI control panel",
-                             [("s", "Status — brain, model, tools, memory", show_status),
-                              ("t", "Tools browser — groups + count", _show_tools),
-                              ("m", "Memory — recent entries", lambda: asyncio.create_task(
-                                  handle_command("/memory", session_id))),
-                              ("a", "Automations — scheduled tasks", lambda: asyncio.create_task(
-                                  handle_command("/automation list", session_id))),
-                              ("g", "Settings — view/change", lambda: asyncio.create_task(
-                                  handle_command("/settings", session_id))),
-                              ("v", "Voice (LiveKit) status", lambda: asyncio.create_task(
-                                  handle_command("/voice", session_id))),
-                              ("d", "Doctor — system health check", lambda: asyncio.create_task(
-                                  handle_command("/doctor", session_id))),
-                              ("h", "Help — all commands", lambda: ui.help_panel(COMMANDS)),
-                              ("r", "Refresh config/tools", lambda: asyncio.create_task(
-                                  handle_command("/refresh", session_id))),
-                              ("q", "Quit", lambda: None)],
-                             subtitle="↑/↓ move • Enter run • hotkey letter • Esc back")
+        ok = pro_ui.key_menu(
+            "🎛️  NIKHILAI control panel",
+            [
+                ("s", "Status — brain, model, tools, memory", show_status),
+                ("t", "Tools browser — groups + count", _show_tools),
+                ("m", "Memory — recent entries", lambda: asyncio.create_task(handle_command("/memory", session_id))),
+                (
+                    "a",
+                    "Automations — scheduled tasks",
+                    lambda: asyncio.create_task(handle_command("/automation list", session_id)),
+                ),
+                ("g", "Settings — view/change", lambda: asyncio.create_task(handle_command("/settings", session_id))),
+                ("v", "Voice (LiveKit) status", lambda: asyncio.create_task(handle_command("/voice", session_id))),
+                (
+                    "d",
+                    "Doctor — system health check",
+                    lambda: asyncio.create_task(handle_command("/doctor", session_id)),
+                ),
+                ("h", "Help — all commands", lambda: ui.help_panel(COMMANDS)),
+                ("r", "Refresh config/tools", lambda: asyncio.create_task(handle_command("/refresh", session_id))),
+                ("q", "Quit", lambda: None),
+            ],
+            subtitle="↑/↓ move • Enter run • hotkey letter • Esc back",
+        )
         if not ok:
             ui.cprint("(keyboard menu ke liye real terminal chahiye — yeh list dekh lo)", ui.DIM)
             ui.help_panel(COMMANDS)
@@ -136,7 +149,7 @@ async def handle_command(line: str, session_id: str) -> bool:
 
         tool_name, rest = args[0], args[1:]
         payload: dict[str, Any] = {}
-        raw_json = tail[len(tool_name):].strip()
+        raw_json = tail[len(tool_name) :].strip()
         if raw_json.startswith("{"):
             import json as _json
 
@@ -171,8 +184,11 @@ async def handle_command(line: str, session_id: str) -> bool:
             ui.cprint("\nKeys chahiye?  `python -m jarvis voice keys`  (exact steps, 5 min ka kaam)", ui.DIM)
             ui.cprint("Bina keys test? `python -m jarvis voice test`", ui.DIM)
         else:
-            ui.cprint("\nChalao: `python -m jarvis voice console` (mic+speaker) ya "
-                      "`python -m jarvis voice dev` (LiveKit Cloud)", ui.DIM)
+            ui.cprint(
+                "\nChalao: `python -m jarvis voice console` (mic+speaker) ya "
+                "`python -m jarvis voice dev` (LiveKit Cloud)",
+                ui.DIM,
+            )
         return True
 
     if cmd == "/text":
@@ -188,9 +204,12 @@ async def handle_command(line: str, session_id: str) -> bool:
         if errors:
             ui.cprint_safe("⚠️ " + "; ".join(errors), ui.WARN)
         else:
+            from ..runtime.modes import describe_mode, mode_entry_hint
+
             ui.cprint(f"✅ mode = {applied.get('mode')}", ui.OK)
-            if applied.get("mode") == "voice":
-                ui.cprint("Voice mode: chalao `python -m jarvis voice` (LiveKit keys chahiye)", ui.DIM)
+            ui.cprint(f"   {describe_mode(applied.get('mode'))}", ui.DIM)
+            if applied.get("mode") != "text":
+                ui.cprint(f"   → {mode_entry_hint(applied.get('mode'))}", ui.DIM)
         return True
 
     if cmd == "/model":
@@ -198,14 +217,15 @@ async def handle_command(line: str, session_id: str) -> bool:
             from ..llm import health
 
             h = health()
-            ui.cprint(f"Brain: {h['roles']['brain']}\nAvailable providers: {', '.join(h['available']) or 'none'}", ui.ACCENT)
+            ui.cprint(
+                f"Brain: {h['roles']['brain']}\nAvailable providers: {', '.join(h['available']) or 'none'}", ui.ACCENT
+            )
             return True
         from ..llm import reset_cache
 
         applied, errors = R.set_many(model=tail)
         reset_cache()
-        ui.cprint("✅ model = " + tail if not errors else "⚠️ " + "; ".join(errors),
-                  ui.OK if not errors else ui.WARN)
+        ui.cprint("✅ model = " + tail if not errors else "⚠️ " + "; ".join(errors), ui.OK if not errors else ui.WARN)
         return True
 
     if cmd == "/provider":
@@ -217,8 +237,9 @@ async def handle_command(line: str, session_id: str) -> bool:
             return True
         applied, errors = R.set_many(provider=args[0].lower())
         reset_cache()
-        ui.cprint("✅ provider = " + args[0] if not errors else "⚠️ " + "; ".join(errors),
-                  ui.OK if not errors else ui.WARN)
+        ui.cprint(
+            "✅ provider = " + args[0] if not errors else "⚠️ " + "; ".join(errors), ui.OK if not errors else ui.WARN
+        )
         return True
 
     if cmd == "/tools":
@@ -226,24 +247,23 @@ async def handle_command(line: str, session_id: str) -> bool:
 
         query = tail.strip().lower()
         groups = pro_ui.tool_groups()
-        multi = {"all", "web", "browser"}          # overlapping groups — registry view me skip
+        multi = {"all", "web", "browser"}  # overlapping groups — registry view me skip
         if not query:
             ui.tools_table({g: names for g, names in groups.items() if g not in multi})
-            ui.cprint("Filter: /tools desktop  •  search: /tools memory  •  "
-                      "chalao: /run <tool> [k=v ...]", ui.DIM)
+            ui.cprint("Filter: /tools desktop  •  search: /tools memory  •  chalao: /run <tool> [k=v ...]", ui.DIM)
             return True
         if query in groups:
             ui.cprint(pro_ui.tools_table(query))
             return True
         # group naam nahi mila → tool-name search
-        hits = [(g, n) for g, names in groups.items() if g not in multi
-                for n in names if query in n]
+        hits = [(g, n) for g, names in groups.items() if g not in multi for n in names if query in n]
         if hits:
             from rich.table import Table as _T  # type: ignore
 
             if pro_ui.HAS_RICH:
-                t = _T(title=f"🔎 '{query}' — {len(hits)} tool", border_style=ui.ACCENT,
-                       header_style=f"bold {ui.ACCENT}")
+                t = _T(
+                    title=f"🔎 '{query}' — {len(hits)} tool", border_style=ui.ACCENT, header_style=f"bold {ui.ACCENT}"
+                )
                 t.add_column("tool", style=ui.ACCENT)
                 t.add_column("group", style=ui.DIM)
                 t.add_column("args", style=ui.DIM)
@@ -315,7 +335,9 @@ async def handle_command(line: str, session_id: str) -> bool:
             ui.cprint_safe(("✅ " if res.get("ok") else "❌ ") + res["message"], ui.OK if res.get("ok") else ui.WARN)
         elif sub == "run" and len(args) > 1:
             res = sch.run_now(args[1])
-            ui.cprint_safe(("▶️ " if res.get("ok") else "❌ ") + str(res.get("message")), ui.OK if res.get("ok") else ui.WARN)
+            ui.cprint_safe(
+                ("▶️ " if res.get("ok") else "❌ ") + str(res.get("message")), ui.OK if res.get("ok") else ui.WARN
+            )
         elif sub == "cancel" and len(args) > 1:
             res = sch.get_store().cancel(args[1])
             ui.cprint_safe(("🗑️ " if res.get("ok") else "❌ ") + res["message"], ui.OK if res.get("ok") else ui.WARN)
@@ -437,8 +459,7 @@ def _header_meta() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # main loop
 # ---------------------------------------------------------------------------
-async def run_cli(session_id: str = "cli", show_reasoning: bool | None = None,
-                  once: str | None = None) -> int:
+async def run_cli(session_id: str = "cli", show_reasoning: bool | None = None, once: str | None = None) -> int:
     """Interactive REPL. `once` diya to sirf ek request chala kar exit."""
     from ..automation import scheduler as sch
 
@@ -467,16 +488,20 @@ async def run_cli(session_id: str = "cli", show_reasoning: bool | None = None,
         ui.answer_panel(res.answer, meta=f"{', '.join(res.workers) or 'direct'} • {res.seconds:.1f}s")
         if res.errors:
             ui.error_panel("\n".join(str(e)[:300] for e in res.errors[:4]), context=dash.events_trace(6))
-        if (show_reasoning if show_reasoning is not None else R.get("show_reasoning", True)):
+        if show_reasoning if show_reasoning is not None else R.get("show_reasoning", True):
             ui.reasoning_panel(res.reasoning)
         return 0
 
     ui.banner(R.get("assistant_name", S.ASSISTANT_NAME), R.get("owner_name", S.OWNER_NAME))
     show_status()
-    ui.cprint(f"\n[{ui.DIM}]Seedha Hinglish me likho — jaise 'chrome kholo' ya "
-              f"'aaj ka mausam batao'. /help se commands dekho.[/]")
-    ui.cprint(f"[{ui.DIM}]Mode: {R.get('mode', 'text')}  •  brain: {S.PROVIDER}  •  "
-              f"{'OFFLINE DEMO' if S.OFFLINE_MODE else 'LIVE'}[{ui.DIM}]\n")
+    ui.cprint(
+        f"\n[{ui.DIM}]Seedha Hinglish me likho — jaise 'chrome kholo' ya "
+        f"'aaj ka mausam batao'. /help se commands dekho.[/]"
+    )
+    ui.cprint(
+        f"[{ui.DIM}]Mode: {R.get('mode', 'text')}  •  brain: {S.PROVIDER}  •  "
+        f"{'OFFLINE DEMO' if S.OFFLINE_MODE else 'LIVE'}[{ui.DIM}]\n"
+    )
 
     while True:
         try:
@@ -525,7 +550,9 @@ async def run_cli(session_id: str = "cli", show_reasoning: bool | None = None,
                     ui.error_panel(f"telegram fail: {type(exc).__name__}: {exc}")
                 continue
             # baaki (doctor/menu) commands handle_command se hi chalao
-            cmdline = "/" + routed.kind if routed.kind in ("doctor", "menu") else f"/{routed.kind} {' '.join(routed.args)}"
+            cmdline = (
+                "/" + routed.kind if routed.kind in ("doctor", "menu") else f"/{routed.kind} {' '.join(routed.args)}"
+            )
             try:
                 if not await handle_command(cmdline, session_id):
                     return 0
@@ -547,8 +574,7 @@ async def run_cli(session_id: str = "cli", show_reasoning: bool | None = None,
                 continue
             except Exception as exc:  # crash → honest error, dashboard band
                 live.__exit__(None, None, None)
-                ui.error_panel(f"{type(exc).__name__}: {exc}",
-                               context=dash.events_trace(6))
+                ui.error_panel(f"{type(exc).__name__}: {exc}", context=dash.events_trace(6))
                 continue
             live.tick()
 
@@ -565,8 +591,7 @@ async def run_cli(session_id: str = "cli", show_reasoning: bool | None = None,
             meta += f" • {len(dash.tools_used)} tool call"
         ui.answer_panel(res.answer, meta=meta)
         if res.errors:
-            ui.error_panel("\n".join(str(e)[:300] for e in res.errors[:4]),
-                           context=dash.events_trace(6))
+            ui.error_panel("\n".join(str(e)[:300] for e in res.errors[:4]), context=dash.events_trace(6))
         if show_reasoning if show_reasoning is not None else R.get("show_reasoning", True):
             ui.reasoning_panel(res.reasoning)
         ui.cprint()

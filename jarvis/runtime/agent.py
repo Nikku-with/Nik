@@ -9,6 +9,7 @@ Kyun ek hi runner: voice/text/telegram ke alag-alag brain banane se behaviour di
 aur bugs teen jagah fix karne padte hain. Yahan sab ek hi graph + ek hi memory + ek hi tools use
 karte hain — bas session aur permission level alag hota hai.
 """
+
 from __future__ import annotations
 
 import time
@@ -27,7 +28,7 @@ class AgentResult:
     spoken: str = ""
     plan: list[str] = field(default_factory=list)
     workers: list[str] = field(default_factory=list)
-    reasoning: list[str] = field(default_factory=list)   # structured PLAN/DECISION/ACTION/RESULT lines
+    reasoning: list[str] = field(default_factory=list)  # structured PLAN/DECISION/ACTION/RESULT lines
     events: list[dict[str, Any]] = field(default_factory=list)
     findings: list[dict[str, Any]] = field(default_factory=list)
     artifacts: list[str] = field(default_factory=list)
@@ -41,15 +42,15 @@ class AgentResult:
     blocked_tools: list[str] = field(default_factory=list)
     memory_updates: list[str] = field(default_factory=list)
     # ---- execution evidence (hard invariant: success bina proof ke nahi) --------------
-    tool_evidence: list[dict[str, Any]] = field(default_factory=list)   # asli tool records
-    execution_required: bool = False                                    # kaam ke liye tool zaroori tha?
-    verified_execution: bool = False                                    # evidence mila + koi fail nahi
+    tool_evidence: list[dict[str, Any]] = field(default_factory=list)  # asli tool records
+    execution_required: bool = False  # kaam ke liye tool zaroori tha?
+    verified_execution: bool = False  # evidence mila + koi fail nahi
 
     @property
     def tool_calls_flat(self) -> list[dict[str, Any]]:
         """Saare tool records ek list me (findings + worker-level evidence)."""
         out = [rec for rec in (self.tool_evidence or []) if isinstance(rec, dict)]
-        for f in (self.findings or []):
+        for f in self.findings or []:
             for rec in (f.get("tool_calls") or []) if isinstance(f, dict) else []:
                 if isinstance(rec, dict):
                     out.append(rec)
@@ -64,35 +65,99 @@ class AgentResult:
         from ..runtime.evidence import supporting_records
 
         records = self.tool_calls_flat
-        ok = supporting_records(records)          # khali search (found=False) success nahi hai
+        ok = supporting_records(records)  # khali search (found=False) success nahi hai
         failed = [r for r in records if not r.get("ok")]
         self.verified_execution = bool(ok) and not failed
 
     def as_dict(self) -> dict[str, Any]:
         return {
-            "request": self.request, "response": self.answer, "answer": self.answer,
-            "spoken": self.spoken, "plan": self.plan, "selected_workers": self.workers,
-            "workers": self.workers, "reasoning": self.reasoning, "events": self.events,
-            "findings": self.findings, "artifacts": self.artifacts, "errors": self.errors,
-            "iterations": self.iterations, "critique": self.critique, "seconds": self.seconds,
-            "session_id": self.session_id, "surface": self.surface, "status": self.status,
+            "request": self.request,
+            "response": self.answer,
+            "answer": self.answer,
+            "spoken": self.spoken,
+            "plan": self.plan,
+            "selected_workers": self.workers,
+            "workers": self.workers,
+            "reasoning": self.reasoning,
+            "events": self.events,
+            "findings": self.findings,
+            "artifacts": self.artifacts,
+            "errors": self.errors,
+            "iterations": self.iterations,
+            "critique": self.critique,
+            "seconds": self.seconds,
+            "session_id": self.session_id,
+            "surface": self.surface,
+            "status": self.status,
             "blocked_tools": self.blocked_tools,
             "execution_required": self.execution_required,
             "verified_execution": self.verified_execution,
-            "tool_evidence": self.tool_calls_flat[:24], "memory_updates": self.memory_updates,
+            "tool_evidence": self.tool_calls_flat[:24],
+            "memory_updates": self.memory_updates,
         }
 
 
 # ---------------------------------------------------------------------------
 # time / date intent — local clock se answer, kabhi guess nahi
 # ---------------------------------------------------------------------------
-_TIME_KEYS = ("time", "samay", "date", "tareekh", "tarikh", "din", "day", "timestamp",
-              "utc", "timezone", "time zone", "clock", "ghadi", "baje", "baj", "o'clock")
-_TIME_BLOCKERS = ("mausam", "weather", "temperature", "temp", "news", "schedule", "yaad dila",
-                  "remind", "automation", "har subah", "har shaam", "daily", "every ", "khol",
-                  "open", "launch", "search", "research", "laao", "browser", "save", "likh",
-                  "bana", "create", "code", "file", "note", "mail", "bhej", "call", "video",
-                  "invoice", "report", "download", "upload", "install", "scan", "clean")
+_TIME_KEYS = (
+    "time",
+    "samay",
+    "date",
+    "tareekh",
+    "tarikh",
+    "din",
+    "day",
+    "timestamp",
+    "utc",
+    "timezone",
+    "time zone",
+    "clock",
+    "ghadi",
+    "baje",
+    "baj",
+    "o'clock",
+)
+_TIME_BLOCKERS = (
+    "mausam",
+    "weather",
+    "temperature",
+    "temp",
+    "news",
+    "schedule",
+    "yaad dila",
+    "remind",
+    "automation",
+    "har subah",
+    "har shaam",
+    "daily",
+    "every ",
+    "khol",
+    "open",
+    "launch",
+    "search",
+    "research",
+    "laao",
+    "browser",
+    "save",
+    "likh",
+    "bana",
+    "create",
+    "code",
+    "file",
+    "note",
+    "mail",
+    "bhej",
+    "call",
+    "video",
+    "invoice",
+    "report",
+    "download",
+    "upload",
+    "install",
+    "scan",
+    "clean",
+)
 
 
 def _is_time_question(low: str) -> bool:
@@ -124,19 +189,33 @@ def _time_answer(text: str) -> str:
         target, label = now, "Aaj"
     utc = datetime.now(timezone.utc)
     off = now.utcoffset()
-    off_s = (f"UTC{'+' if off.total_seconds() >= 0 else '-'}{abs(off).seconds // 3600:02d}:"
-             f"{(abs(off).seconds // 60) % 60:02d}") if off else "UTC"
-    hindi_day = {"Monday": "Somvaar", "Tuesday": "Mangalvaar", "Wednesday": "Budhvaar",
-                 "Thursday": "Guruvaar", "Friday": "Shukravaar", "Saturday": "Shanivaar",
-                 "Sunday": "Ravivaar"}.get(target.strftime("%A"), "")
+    off_s = (
+        (
+            f"UTC{'+' if off.total_seconds() >= 0 else '-'}{abs(off).seconds // 3600:02d}:"
+            f"{(abs(off).seconds // 60) % 60:02d}"
+        )
+        if off
+        else "UTC"
+    )
+    hindi_day = {
+        "Monday": "Somvaar",
+        "Tuesday": "Mangalvaar",
+        "Wednesday": "Budhvaar",
+        "Thursday": "Guruvaar",
+        "Friday": "Shukravaar",
+        "Saturday": "Shanivaar",
+        "Sunday": "Ravivaar",
+    }.get(target.strftime("%A"), "")
     want_time = any(k in low for k in ("time", "samay", "baje", "baj", "clock", "ghadi", "utc", "timestamp"))
     want_date = any(k in low for k in ("date", "tareekh", "tarikh", "din", "day"))
     lines: list[str] = []
     if want_time or not want_date:
         lines.append(f"🕒 {label}: {target.strftime('%I:%M %p')} ({now.tzname() or 'IST'}, {off_s})")
     if want_date or not want_time:
-        lines.append(f"📅 {label} ki date: {target.strftime('%d %B %Y')} — {target.strftime('%A')}"
-                     + (f" ({hindi_day})" if hindi_day else ""))
+        lines.append(
+            f"📅 {label} ki date: {target.strftime('%d %B %Y')} — {target.strftime('%A')}"
+            + (f" ({hindi_day})" if hindi_day else "")
+        )
     lines.append(f"🌍 UTC: {utc.strftime('%I:%M %p')} • epoch: {int(target.timestamp())}")
     lines.append("_(ye local system clock se aaya hai — guess nahi.)_")
     return "\n".join(lines)
@@ -155,10 +234,17 @@ async def _fast_paths(text: str, session_id: str, surface: str) -> AgentResult |
     # 0) time / date — local clock, koi LLM nahi (hallucination-proof)
     if _is_time_question(low):
         answer = _time_answer(text)
-        return AgentResult(text, answer, spoken=for_speech(answer), session_id=session_id,
-                           surface=surface, seconds=time.time() - started, status="time",
-                           workers=["clock"], reasoning=[f"ACTION: local clock read ({low[:40]})",
-                                                      "RESULT: time/date local system clock se (ist + utc)"])
+        return AgentResult(
+            text,
+            answer,
+            spoken=for_speech(answer),
+            session_id=session_id,
+            surface=surface,
+            seconds=time.time() - started,
+            status="time",
+            workers=["clock"],
+            reasoning=[f"ACTION: local clock read ({low[:40]})", "RESULT: time/date local system clock se (ist + utc)"],
+        )
 
     # 1) memory operations
     op = is_memory_request(text)
@@ -167,15 +253,30 @@ async def _fast_paths(text: str, session_id: str, surface: str) -> AgentResult |
         if op == "remember":
             res = mgr.remember(strip_trigger(text))
             answer = ("🧠 " if res.get("ok") else "⚠️ ") + res["message"]
-            return AgentResult(text, answer, spoken=for_speech(answer), session_id=session_id,
-                               surface=surface, seconds=time.time() - started, status="memory",
-                               workers=["memory"], memory_updates=[res.get("action", "")])
+            return AgentResult(
+                text,
+                answer,
+                spoken=for_speech(answer),
+                session_id=session_id,
+                surface=surface,
+                seconds=time.time() - started,
+                status="memory",
+                workers=["memory"],
+                memory_updates=[res.get("action", "")],
+            )
         if op == "forget":
             res = mgr.forget(text)
             answer = ("🗑️ " if res.get("ok") else "🧐 ") + res["message"]
-            return AgentResult(text, answer, spoken=for_speech(answer), session_id=session_id,
-                               surface=surface, seconds=time.time() - started, status="memory",
-                               workers=["memory"])
+            return AgentResult(
+                text,
+                answer,
+                spoken=for_speech(answer),
+                session_id=session_id,
+                surface=surface,
+                seconds=time.time() - started,
+                status="memory",
+                workers=["memory"],
+            )
         if op == "update":
             from ..config import runtime as rt
 
@@ -183,27 +284,50 @@ async def _fast_paths(text: str, session_id: str, surface: str) -> AgentResult |
             m = __import__("re").search(r"(?:set|kar do|karo|rakho|badal)\s+([a-z_]+)\s*[:=]?\s*(\S+)", low)
             if m and m.group(1) in rt.SCHEMA:
                 applied, errors = rt.set_many(**{m.group(1): m.group(2)})
-                answer = (f"✅ setting `{m.group(1)}` = {list(applied.values())[0]}" if applied
-                          else f"⚠️ {'; '.join(errors)}")
-                return AgentResult(text, answer, spoken=for_speech(answer), session_id=session_id,
-                                   surface=surface, seconds=time.time() - started, status="settings",
-                                   workers=["settings"])
+                answer = (
+                    f"✅ setting `{m.group(1)}` = {list(applied.values())[0]}" if applied else f"⚠️ {'; '.join(errors)}"
+                )
+                return AgentResult(
+                    text,
+                    answer,
+                    spoken=for_speech(answer),
+                    session_id=session_id,
+                    surface=surface,
+                    seconds=time.time() - started,
+                    status="settings",
+                    workers=["settings"],
+                )
             res = mgr.update_by_query(text, strip_trigger(text))
             answer = ("♻️ " if res.get("ok") else "⚠️ ") + res["message"]
-            return AgentResult(text, answer, spoken=for_speech(answer), session_id=session_id,
-                               surface=surface, seconds=time.time() - started, status="memory",
-                               workers=["memory"])
+            return AgentResult(
+                text,
+                answer,
+                spoken=for_speech(answer),
+                session_id=session_id,
+                surface=surface,
+                seconds=time.time() - started,
+                status="memory",
+                workers=["memory"],
+            )
         if op == "list":
             rows = mgr.list_memories(limit=20)
             body = "\n".join(f"{i}. [{r['kind']}] {r['text'][:110]}" for i, r in enumerate(rows, 1)) or "khali"
             answer = f"🧠 Memory ({len(rows)}):\n{body}"
-            return AgentResult(text, answer, spoken=f"Aapki {len(rows)} memories hain.",
-                               session_id=session_id, surface=surface,
-                               seconds=time.time() - started, status="memory", workers=["memory"])
+            return AgentResult(
+                text,
+                answer,
+                spoken=f"Aapki {len(rows)} memories hain.",
+                session_id=session_id,
+                surface=surface,
+                seconds=time.time() - started,
+                status="memory",
+                workers=["memory"],
+            )
 
     # 2) pure settings / mode commands natural language me
-    if __import__("re").search(r"\b(mode|model|provider|owner name|language|personality)\b", low) and \
-            __import__("re").search(r"\b(badal|set|karo|kar do|change)\b", low):
+    if __import__("re").search(r"\b(mode|model|provider|owner name|language|personality)\b", low) and __import__(
+        "re"
+    ).search(r"\b(badal|set|karo|kar do|change)\b", low):
         import re as _re
 
         mgr_pairs: dict[str, str] = {}
@@ -238,10 +362,19 @@ async def _fast_paths(text: str, session_id: str, surface: str) -> AgentResult |
                     reset_cache()
                 except Exception:
                     pass
-            answer = ("✅ " + ", ".join(f"{k}={v}" for k, v in applied.items())) if applied else f"⚠️ {'; '.join(errors)}"
-            return AgentResult(text, answer, spoken=for_speech(answer), session_id=session_id,
-                               surface=surface, seconds=time.time() - started, status="settings",
-                               workers=["settings"])
+            answer = (
+                ("✅ " + ", ".join(f"{k}={v}" for k, v in applied.items())) if applied else f"⚠️ {'; '.join(errors)}"
+            )
+            return AgentResult(
+                text,
+                answer,
+                spoken=for_speech(answer),
+                session_id=session_id,
+                surface=surface,
+                seconds=time.time() - started,
+                status="settings",
+                workers=["settings"],
+            )
     return None
 
 
@@ -282,33 +415,41 @@ async def run_agent(
     use_fast_path: bool = True,
     voice_output: bool = False,
     on_progress: Any = None,
+    mode: str | None = None,
 ) -> AgentResult:
     """Ek request chalao — fast paths → LangGraph → structured result.
 
     `on_progress`: optional callable(ProgressEvent) — CLI/Telegram isse live
     "thinking / planning / tool chal raha hai" feed render karte hain.
+    `mode`: text|voice|telegram — diya to surface isi se niklegi (uniform modes).
     """
+    if mode:
+        from .modes import surface_for_mode
+
+        surface = surface_for_mode(mode)
     started = time.time()
     from .progress import CallbackSink, emit, use_sink
-    return await _run_agent_inner(text, session_id, surface, use_fast_path, voice_output,
-                                  started, on_progress, CallbackSink, emit, use_sink)
+
+    return await _run_agent_inner(
+        text, session_id, surface, use_fast_path, voice_output, started, on_progress, CallbackSink, emit, use_sink
+    )
 
 
-async def _run_agent_inner(text, session_id, surface, use_fast_path, voice_output,
-                           started, on_progress, CallbackSink, emit, use_sink):
+async def _run_agent_inner(
+    text, session_id, surface, use_fast_path, voice_output, started, on_progress, CallbackSink, emit, use_sink
+):
     from ..security.gate import gate_context
+
     # agar caller ne apna callback diya to wahi sink use karo, warna bahar wala (contextvar) sink
     sink = CallbackSink(on_progress) if on_progress else None
     # Gate surface: dangerous approvals usi surface par pooche jayenge jahan request aayi
     with gate_context(surface):
         if sink is None:
             emit("start", f"Request mila: {text[:80]}", detail=text)
-            return await _run_agent_body(text, session_id, surface, use_fast_path, voice_output,
-                                         started, emit)
+            return await _run_agent_body(text, session_id, surface, use_fast_path, voice_output, started, emit)
         with use_sink(sink):
             emit("start", f"Request mila: {text[:80]}", detail=text)
-            return await _run_agent_body(text, session_id, surface, use_fast_path, voice_output,
-                                         started, emit)
+            return await _run_agent_body(text, session_id, surface, use_fast_path, voice_output, started, emit)
 
 
 async def _run_agent_body(text, session_id, surface, use_fast_path, voice_output, started, emit):
@@ -330,8 +471,7 @@ async def _run_agent_body(text, session_id, surface, use_fast_path, voice_output
         fast = await _fast_paths(text, session_id, surface)
         if fast is not None:
             fast.seconds = time.time() - started
-            emit("done", f"Fast-path jawab ({fast.seconds:.1f}s)", status="ok",
-                 ms=int(fast.seconds * 1000))
+            emit("done", f"Fast-path jawab ({fast.seconds:.1f}s)", status="ok", ms=int(fast.seconds * 1000))
             _post_run(fast, session_id)
             return fast
 
@@ -371,8 +511,7 @@ async def _run_agent_body(text, session_id, surface, use_fast_path, voice_output
         calls_ = [c for f in (result.findings or []) for c in (f.get("tool_calls") or [])]
         if calls_:
             failed = [c for c in calls_ if not c.get("ok", True)]
-            emit("verify", f"{len(calls_)} tool call verify — {len(failed)} fail",
-                 status="fail" if failed else "ok")
+            emit("verify", f"{len(calls_)} tool call verify — {len(failed)} fail", status="fail" if failed else "ok")
         spoken = state.get("spoken") or ""
         result.spoken = for_speech(spoken) if spoken else summary_for_speech(result.answer)
     except Exception as exc:
@@ -380,18 +519,18 @@ async def _run_agent_body(text, session_id, surface, use_fast_path, voice_output
         result.errors = [str(exc)]
         result.verified_execution = False
         emit("error", f"Agent crash: {type(exc).__name__}: {str(exc)[:160]}", status="fail")
-        result.answer = (f"⚠️ Agent chalane me dikkat aayi: {str(exc)[:300]}\n"
-                         "Try: `python -m jarvis doctor` (config check) ya `python -m jarvis doctor --fix`.")
+        result.answer = (
+            f"⚠️ Agent chalane me dikkat aayi: {str(exc)[:300]}\n"
+            "Try: `python -m jarvis doctor` (config check) ya `python -m jarvis doctor --fix`."
+        )
         result.spoken = for_speech(result.answer)
 
     if voice_output and not result.spoken:
         result.spoken = summary_for_speech(result.answer)
     result.seconds = time.time() - started
     if result.errors:
-        emit("warn", f"{len(result.errors)} error record hua", detail=str(result.errors[0])[:200],
-             status="fail")
-    emit("done", f"Kaam khatam ({result.seconds:.1f}s)", status=result.status,
-         ms=int(result.seconds * 1000))
+        emit("warn", f"{len(result.errors)} error record hua", detail=str(result.errors[0])[:200], status="fail")
+    emit("done", f"Kaam khatam ({result.seconds:.1f}s)", status=result.status, ms=int(result.seconds * 1000))
     _post_run(result, session_id)
     return result
 
@@ -416,8 +555,9 @@ def _post_run(result: AgentResult, session_id: str) -> None:
         except Exception:
             pass
         if task_id:
-            get_memory().finish_task(task_id, result.status, result=result.answer[:1200],
-                                     plan=result.plan, artifacts=result.artifacts)
+            get_memory().finish_task(
+                task_id, result.status, result=result.answer[:1200], plan=result.plan, artifacts=result.artifacts
+            )
     except Exception:
         pass
     try:
@@ -429,8 +569,14 @@ def _post_run(result: AgentResult, session_id: str) -> None:
 
 
 async def stream_agent(text: str, session_id: str = "cli", surface: str = "cli_owner") -> AsyncIterator[dict[str, Any]]:
-    """Live events stream (CLI spinner + Telegram progress ke liye)."""
-    from ..graph.build import jarvis_stream
+    """Live events stream (CLI spinner + Telegram progress ke liye).
 
-    async for chunk in jarvis_stream(text, session_id=session_id):
-        yield chunk
+    Poora stream surface ke gate context me chalta hai — dangerous steps usi
+    surface par pooche jayenge (pehle ambient surface leak hota tha).
+    """
+    from ..graph.build import jarvis_stream
+    from ..security.gate import gate_context
+
+    with gate_context(surface):
+        async for chunk in jarvis_stream(text, session_id=session_id):
+            yield chunk

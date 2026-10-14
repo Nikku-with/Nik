@@ -479,8 +479,13 @@ def build_application():
             await update.message.reply_text("Usage: `/mode text|voice|telegram`", parse_mode=ParseMode.MARKDOWN)
             return
         applied, errors = R.set_many(mode=arg)
+        from ..runtime.modes import describe_mode, mode_entry_hint
+
+        extra = f"\n_{describe_mode(arg)}_" if not errors else ""
+        if not errors and arg != "telegram":
+            extra += f"\n→ {mode_entry_hint(arg)}"
         await update.message.reply_text(
-            f"✅ mode = *{arg}*" + (f"\n(voice mode ke liye LiveKit keys chahiye)" if arg == "voice" else "")
+            f"✅ mode = *{arg}*" + extra
             + (f"\n⚠️ {errors}" if errors else ""), parse_mode=ParseMode.MARKDOWN)
 
     async def cmd_model(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:

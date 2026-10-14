@@ -13,6 +13,7 @@ Features:
   * error isolation — ek worker fail ho to poora graph nahi girta
   * mermaid diagram (`graph_mermaid()`) — docs/preview ke liye
 """
+
 from __future__ import annotations
 
 import time
@@ -140,21 +141,50 @@ async def jarvis_stream(
     session_id: str = "default",
     thread_id: str | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
-    """Node-by-node live events (UI/voice streaming ke liye)."""
+    """Node-by-node live events + thinking feed (UI/voice streaming ke liye).
+
+    Har node update ke saath us dauraan emit hue ProgressEvents bhi aate hain
+    (`{"node": "progress", ...}` chunks) — web console par bhi thinking/tools dikhte hain.
+    """
+    from ..runtime.progress import CollectingSink, use_sink
+
     graph = get_jarvis_graph()
     state = initial_state(request, session_id=session_id)
     config: dict[str, Any] = {
         "configurable": {"thread_id": _thread(session_id, thread_id)},
         "recursion_limit": 12 + MAX_GRAPH_ITERATIONS * 8,
     }
-    async for chunk in graph.astream(state, config=config, stream_mode="updates"):
-        for node, update in (chunk or {}).items():
-            events = (update or {}).get("events") if isinstance(update, dict) else None
-            yield {"node": node, "update_keys": list((update or {}).keys()) if isinstance(update, dict) else [],
-                   "events": events or []}
-            if node == "respond" and isinstance(update, dict):
-                yield {"node": "final", "answer": update.get("answer", ""), "spoken": update.get("spoken", ""),
-                       "status": update.get("status", "done")}
+    sink = CollectingSink(limit=500)
+    yielded = 0
+    last_answer = ""  # respond node answer wapas nahi deta — synthesize se yaad rakho
+    with use_sink(sink):
+        async for chunk in graph.astream(state, config=config, stream_mode="updates"):
+            for node, update in (chunk or {}).items():
+                events = (update or {}).get("events") if isinstance(update, dict) else None
+                if isinstance(update, dict) and update.get("answer"):
+                    last_answer = str(update["answer"])
+                yield {
+                    "node": node,
+                    "update_keys": list((update or {}).keys()) if isinstance(update, dict) else [],
+                    "events": events or [],
+                }
+                if node == "respond" and isinstance(update, dict):
+                    yield {
+                        "node": "final",
+                        "answer": last_answer,
+                        "spoken": update.get("spoken", ""),
+                        "status": update.get("status", "done"),
+                    }
+            fresh = sink.events[yielded:]
+            yielded = len(sink.events)
+            if fresh:
+                yield {
+                    "node": "progress",
+                    "events": [
+                        {"kind": e.kind, "text": e.text, "tool": e.tool, "status": e.status, "ms": e.ms} for e in fresh
+                    ],
+                    "lines": [e.line() for e in fresh],
+                }
 
 
 def graph_mermaid() -> str:
