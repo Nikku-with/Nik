@@ -14,6 +14,7 @@ Graph ka flow:
 Har worker apna kaam karke `findings` me likhta hai. Workers ek saath (parallel) chalte hain.
 Critic answer ko check karta hai; gap mile to `refine` dobara dispatch karta hai (max iterations).
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -28,9 +29,15 @@ from ..config import FILE_SEARCH_ROOTS, MAX_GRAPH_ITERATIONS, OFFLINE_MODE, OWNE
 from ..dspy_engine import modules as dspy_mods
 from ..llm import get_chat_model
 from ..memory.session_state import get_state
-from ..runtime.evidence import (TOOL_REQUIRED_WORKERS, claims_execution,  # noqa: F401
-                                claims_without_support, evidence_records, is_tool_required,
-                                supporting_records, verify_execution)
+from ..runtime.evidence import (
+    claims_execution,  # noqa: F401
+    claims_without_support,
+    detect_blind_handoffs,
+    evidence_records,
+    session_evidence_summary,
+    supporting_records,
+    verify_execution,
+)
 from ..runtime.progress import emit
 from ..memory.store import get_memory, owner_profile_block
 from ..skills.loader import skills_prompt_block
@@ -123,6 +130,12 @@ async def plan_node(state: JarvisState) -> dict[str, Any]:
     emit("thinking", f"Plan bana raha hoon — workers: {', '.join(workers) or 'default'}")
     result = await asyncio.to_thread(dspy_mods.plan, request, workers, context[:6000])
     steps = result.get("steps") or []
+    plan_errors: list[str] = []
+    if not steps and [w for w in workers if w in WORKER_NODES]:
+        # anti-lazy: planner ne 0 steps diye par workers chalne wale hain — labeled fallback
+        steps = ["request ko seedha execute karo (planner ne steps nahi diye — fallback)"]
+        plan_errors.append("planner gave 0 steps — fallback single-step plan used")
+        emit("error", "planner ne khaali plan diya — fallback step se chala rahe hain")
     if steps:
         emit("plan", f"{len(steps)}-step plan ready", detail=" → ".join(str(x)[:60] for x in steps[:5]))
     task_id = get_memory().start_task(request, route=",".join(workers))
@@ -134,6 +147,7 @@ async def plan_node(state: JarvisState) -> dict[str, Any]:
         "plan": steps,
         "deliverable": result.get("deliverable", ""),
         "task_id": task_id,
+        "errors": plan_errors,
         "events": [_event(state, "plan", f"{len(steps)} steps" + (" +skill" if skills else ""), steps=steps)],
     }
 
@@ -142,7 +156,12 @@ async def plan_node(state: JarvisState) -> dict[str, Any]:
 # 4. WORKERS
 # ===========================================================================
 def _finding(worker: str, summary: str, **extra: Any) -> dict[str, Any]:
-    return {"worker": worker, "summary": summary[:12000], "ts": time.time(), **extra}
+    # anti-lazy: khaali summary ko label karke mark karo (chup-chaap pass nahi hoga)
+    text = (summary or "").strip()
+    if not text:
+        text = "(khali — worker ne kuch report nahi kiya)"
+        extra.setdefault("lazy", True)
+    return {"worker": worker, "summary": text[:12000], "ts": time.time(), **extra}
 
 
 def _extract_urls(text: str) -> list[str]:
@@ -171,7 +190,7 @@ async def browser_worker(state: JarvisState) -> dict[str, Any]:
     if "note" in request.lower() or "note pad" in request.lower() or "notepad" in request.lower():
         if not save_as:
             m = re.search(r"(\w[\w\s]{2,40}?)\s*(?:naam|name)\s*(?:se|rakh)", request, re.I)
-            save_as = (m.group(1).strip().replace(" ", "_") if m else "jarvis_research")
+            save_as = m.group(1).strip().replace(" ", "_") if m else "jarvis_research"
 
     from ..tools.browser_tools import browser_research, run_browser_task
 
@@ -220,14 +239,23 @@ async def browser_worker(state: JarvisState) -> dict[str, Any]:
         evidence["error"] = str(outcome.get("error"))[:200]
 
     update: dict[str, Any] = {
-        "findings": [_finding("browser", summary, sites=sites, artifacts=artifacts,
-                              offline=bool(outcome.get("offline")), seconds=round(time.time() - started, 1))],
+        "findings": [
+            _finding(
+                "browser",
+                summary,
+                sites=sites,
+                artifacts=artifacts,
+                offline=bool(outcome.get("offline")),
+                seconds=round(time.time() - started, 1),
+            )
+        ],
         "artifacts": artifacts,
         # browser = tool-required worker: bina is record ke success claim allowed nahi
         "execution_required": True,
         "tool_evidence": [evidence],
-        "events": [_event(state, "browser_worker",
-                          f"{time.time() - started:.1f}s • {len(sites)} sites • {browser_tool}={ok}")],
+        "events": [
+            _event(state, "browser_worker", f"{time.time() - started:.1f}s • {len(sites)} sites • {browser_tool}={ok}")
+        ],
     }
     if outcome.get("notes_saved"):
         update["notes_saved"] = [save_as or "browser_result"]
@@ -253,22 +281,26 @@ async def research_worker(state: JarvisState) -> dict[str, Any]:
     if sites:
         sources = sites
         pairs: list[tuple[str, str]] = []
+
         async def _fetch(u: str):
             try:
                 return u, await fetch_url_text(u if u.startswith("http") else f"https://{u}", max_chars=10000)
             except Exception as exc:
                 return u, f"[FETCH FAILED: {exc}]"
+
         pairs = list(await asyncio.gather(*(_fetch(s) for s in sites[:6])))
     else:
         search_rows = await web_search_results(request, num=6)
         top = [r for r in search_rows if r.get("url")][:5]
         sources = [r["url"] for r in top]
+
         # parallel fetch (sasta fast path) — browser se pehle
         async def _fetch_r(u: str):
             try:
                 return u, await fetch_url_text(u, max_chars=8000)
             except Exception as exc:
                 return u, f"[FETCH FAILED: {exc}]"
+
         pairs = list(await asyncio.gather(*(_fetch_r(u) for u in sources)))
 
     good_pairs = [(u, t) for u, t in pairs if t and "FETCH FAILED" not in t[:40]]
@@ -287,11 +319,8 @@ async def research_worker(state: JarvisState) -> dict[str, Any]:
     if search_rows:
         search_table = "\n".join(f"- {r['title']} — {r['url']}" for r in search_rows[:6])
 
-    summary = (
-        f"query: {request[:200]}\n"
-        f"sources fetched: {len(pairs)} (parallel)\n{search_table}\n\n"
-        f"{digest[:6000]}"
-        + ("\n\nstructured rows:\n" + json.dumps(rows, indent=2, ensure_ascii=False)[:2500] if rows else "")
+    summary = f"query: {request[:200]}\nsources fetched: {len(pairs)} (parallel)\n{search_table}\n\n{digest[:6000]}" + (
+        "\n\nstructured rows:\n" + json.dumps(rows, indent=2, ensure_ascii=False)[:2500] if rows else ""
     )
 
     fetched_ok = len(good_pairs)
@@ -299,8 +328,10 @@ async def research_worker(state: JarvisState) -> dict[str, Any]:
     evidence = {
         "name": "web_search_results+fetch_url_text",
         "args": {"query": request[:200], "sites": sites[:6]},
-        "output": (f"search_rows={len(search_rows)} pages_fetched_ok={fetched_ok}/{len(pairs)}"
-                   + (f" first={sources[0]}" if sources else "")),
+        "output": (
+            f"search_rows={len(search_rows)} pages_fetched_ok={fetched_ok}/{len(pairs)}"
+            + (f" first={sources[0]}" if sources else "")
+        ),
         "ok": researched_ok,
         "source": "worker",
         "seconds": round(time.time() - started, 1),
@@ -346,17 +377,28 @@ async def code_worker(state: JarvisState) -> dict[str, Any]:
         f"ok: {outcome.get('ok')}\n\n"
         f"{outcome.get('report', '')[:5000]}"
     )
-    code_evidence = [{
-        "name": "code_engine", "args": {"task": request[:200], "language": "python"},
-        "output": str(outcome.get("report", ""))[:800] or "(koi output nahi)",
-        "ok": bool(outcome.get("ok")), "source": "deterministic",
-    }]
+    code_evidence = [
+        {
+            "name": "code_engine",
+            "args": {"task": request[:200], "language": "python"},
+            "output": str(outcome.get("report", ""))[:800] or "(koi output nahi)",
+            "ok": bool(outcome.get("ok")),
+            "source": "deterministic",
+        }
+    ]
     return {
-        "findings": [_finding("code", summary, artifacts=outcome.get("artifacts", []),
-                              seconds=round(time.time() - started, 1), ok=outcome.get("ok"),
-                              tool_calls=code_evidence)],
+        "findings": [
+            _finding(
+                "code",
+                summary,
+                artifacts=outcome.get("artifacts", []),
+                seconds=round(time.time() - started, 1),
+                ok=outcome.get("ok"),
+                tool_calls=code_evidence,
+            )
+        ],
         "artifacts": outcome.get("artifacts", []),
-        "execution_required": True,           # code worker hamesha asli execution hai
+        "execution_required": True,  # code worker hamesha asli execution hai
         "tool_evidence": code_evidence,
         "events": [_event(state, "code_worker", f"{outcome.get('attempts')} attempts • ok={outcome.get('ok')}")],
     }
@@ -396,8 +438,13 @@ async def desktop_worker(state: JarvisState) -> dict[str, Any]:
     # (dhyaan: fail hui call bhi "attempt" hai — warna same kaam do baar chal jata,
     #  jaise Windows par notepad do baar khulna aur text do baar likhna)
     attempted_tools = {c.get("name") for c in calls}
-    pending_actions = {"actions": [a for a in action.get("actions", [])
-                                   if not (set(_ACTION_TOOL_NAMES.get(a.get("kind"), ())) & attempted_tools)]}
+    pending_actions = {
+        "actions": [
+            a
+            for a in action.get("actions", [])
+            if not (set(_ACTION_TOOL_NAMES.get(a.get("kind"), ())) & attempted_tools)
+        ]
+    }
     if pending_actions["actions"]:
         forced = await _execute_desktop_action(pending_actions, tools)
         calls.extend(forced)
@@ -407,16 +454,30 @@ async def desktop_worker(state: JarvisState) -> dict[str, Any]:
 
     notes: list[str] = []
     low_r = request.lower()
-    wants_note = any(k in low_r for k in ("save kar", "save kardo", "save krdo", "likh do", "likh de",
-                                          "notepad me", "note me save", "note bana", "note banao"))
+    wants_note = any(
+        k in low_r
+        for k in (
+            "save kar",
+            "save kardo",
+            "save krdo",
+            "likh do",
+            "likh de",
+            "notepad me",
+            "note me save",
+            "note bana",
+            "note banao",
+        )
+    )
     if wants_note and ("save_note" in run.text or "Note save ho gaya" in run.text):
         notes = [f"desktop_{int(time.time())}"]
 
     # --- 3) finding me sirf verified facts ---
     body = run.text
     if forced:
-        body += ("\n\n[verified execution] sub-agent ne tool call nahi kiya tha, isliye maine khud ye chalaya:\n"
-                 + "\n".join(SubAgentRun(calls=forced).lines(limit=8)))
+        body += (
+            "\n\n[verified execution] sub-agent ne tool call nahi kiya tha, isliye maine khud ye chalaya:\n"
+            + "\n".join(SubAgentRun(calls=forced).lines(limit=8))
+        )
     if done:
         body += "\n\n[verified actions]\n" + "\n".join(SubAgentRun(calls=done).lines(limit=8))
     if failed:
@@ -424,24 +485,35 @@ async def desktop_worker(state: JarvisState) -> dict[str, Any]:
 
     # jab request action wali thi par kuch bhi nahi chala — sub-agent ka text unreliable hai
     if needs_action and not calls:
-        body = (f"⚠️ VERIFICATION FAILED: is request ke liye koi tool call nahi hua (sub-agent ka text: "
-                f"{run.text[:300]})\n"
-                "Matlab: machine par kuch bhi nahi hua. Owner ko sach batao, kaam hua nahi.")
+        body = (
+            f"⚠️ VERIFICATION FAILED: is request ke liye koi tool call nahi hua (sub-agent ka text: "
+            f"{run.text[:300]})\n"
+            "Matlab: machine par kuch bhi nahi hua. Owner ko sach batao, kaam hua nahi."
+        )
 
-    finding = _finding("desktop", body[:6000], seconds=round(time.time() - started, 1),
-                       actions=[{"name": c["name"], "ok": c["ok"]} for c in calls][:12],
-                       tool_calls=calls[:24])
+    finding = _finding(
+        "desktop",
+        body[:6000],
+        seconds=round(time.time() - started, 1),
+        actions=[{"name": c["name"], "ok": c["ok"]} for c in calls][:12],
+        tool_calls=calls[:24],
+    )
     return {
         "findings": [finding],
         "notes_saved": notes,
         "action_required": needs_action,
         "execution_required": needs_action,
-        "tool_evidence": calls[:24],          # asli tool results — honesty_guard ka evidence
+        "tool_evidence": calls[:24],  # asli tool results — honesty_guard ka evidence
         "actions_done": done,
         "action_failures": failed,
-        "events": [_event(state, "desktop_worker",
-                          f"{time.time() - started:.1f}s • {len(tools)} tools • "
-                          f"calls={len(calls)} ok={len(done)} fail={len(failed)}")],
+        "events": [
+            _event(
+                state,
+                "desktop_worker",
+                f"{time.time() - started:.1f}s • {len(tools)} tools • "
+                f"calls={len(calls)} ok={len(done)} fail={len(failed)}",
+            )
+        ],
     }
 
 
@@ -454,7 +526,9 @@ async def memory_worker(state: JarvisState) -> dict[str, Any]:
     low = request.lower()
     try:
         if any(k in low for k in ("yaad rakh", "remember", "note kar le")):
-            fact = re.sub(r"(yaad rakhna|yaad rakho|yaad rakh|remember karo|remember|note kar le)", "", request, flags=re.I).strip(" ,।:-")
+            fact = re.sub(
+                r"(yaad rakhna|yaad rakho|yaad rakh|remember karo|remember|note kar le)", "", request, flags=re.I
+            ).strip(" ,।:-")
             mem.remember_fact(fact or request, tags="owner,explicit")
             stored = f"stored: {fact or request}"
         if any(k in low for k in ("yaad hai", "kya pata", "recall", "bata mujhe", "bhool")):
@@ -477,7 +551,6 @@ def _desktop_tools() -> list:
     return tools_for("desktop", "runtime", "ops")
 
 
-
 # ===========================================================================
 # DETERMINISTIC DESKTOP ACTION ENGINE
 # ---------------------------------------------------------------------------
@@ -489,15 +562,40 @@ def _desktop_tools() -> list:
 #   4. answer me jhooth nahi ja sakta — synthesize me honesty guard lagta hai
 # ===========================================================================
 _ACTION_KEYS = (
-    "open", "kholo", "khol do", "khol", "launch", "chalu kar", "chala do", "start karo",
-    "band kar", "close", "likho", "likh do", "type kar", "type karo", "likhde", "likh de",
-    "screenshot", "screen shot", "hotkey", "ctrl+", "alt+", "volume", "aawaz", "sunna",
-    "minimize", "maximize", "focus",
+    "open",
+    "kholo",
+    "khol do",
+    "khol",
+    "launch",
+    "chalu kar",
+    "chala do",
+    "start karo",
+    "band kar",
+    "close",
+    "likho",
+    "likh do",
+    "type kar",
+    "type karo",
+    "likhde",
+    "likh de",
+    "screenshot",
+    "screen shot",
+    "hotkey",
+    "ctrl+",
+    "alt+",
+    "volume",
+    "aawaz",
+    "sunna",
+    "minimize",
+    "maximize",
+    "focus",
 )
 _OPEN_VERBS = r"(?:open|kholo|khol\s*do|khol|launch|chalu\s*kar\w*|chala\s*do|start\s*kar\w*)"
 _TYPE_VERBS = r"(?:likh\w*|type\s*kar\w*|type|likh\s*de|likh\s*do)"
-_CONNECTORS = (r"\b(?:krke|karke|ke\s*baad|then|aur|and|usme|usmein|us\s*me|me|mein|upar|par|pe|"
-               r"phir|so|ab)\b")
+_CONNECTORS = (
+    r"\b(?:krke|karke|ke\s*baad|then|aur|and|usme|usmein|us\s*me|me|mein|upar|par|pe|"
+    r"phir|so|ab)\b"
+)
 
 
 def detect_desktop_action(request: str) -> dict[str, Any]:
@@ -533,10 +631,15 @@ def detect_desktop_action(request: str) -> dict[str, Any]:
         typed = re.sub(rf"^.*?{_OPEN_VERBS}\b", "", typed, flags=re.I)
         typed = re.sub(rf"^[\s,]+(?:{_CONNECTORS.strip('()?')})[\s,]+", "", typed, flags=re.I)
         typed = re.sub(rf"^(?:{_CONNECTORS.strip('()?')})[\s,]+", "", typed, flags=re.I)
-    typed = (typed or "").strip(' .,"\'“”‘’')
+    typed = (typed or "").strip(" .,\"'“”‘’")
     if typed and len(typed) >= 1 and ("likh" in low or "type" in low):
-        actions.append({"kind": "type_text", "text": typed[:400], "press_enter": bool(
-            re.search(r"(enter|⏎|nayi line|new line)", low))})
+        actions.append(
+            {
+                "kind": "type_text",
+                "text": typed[:400],
+                "press_enter": bool(re.search(r"(enter|⏎|nayi line|new line)", low)),
+            }
+        )
 
     # screenshot
     if "screenshot" in low or "screen shot" in low:
@@ -583,26 +686,35 @@ async def _execute_desktop_action(action: dict[str, Any], tools: list) -> list[d
         t = by_name.get(name)
         if t is None:
             emit("error", f"Tool '{name}' is worker me nahi mila", tool=name, status="fail")
-            records.append({"name": name, "args": args, "ok": False,
-                            "output": f"(tool '{name}' is worker me available nahi hai)"})
+            records.append(
+                {"name": name, "args": args, "ok": False, "output": f"(tool '{name}' is worker me available nahi hai)"}
+            )
             return
         emit("tool_start", f"{name} chala raha hoon", tool=name, detail=str(args)[:160])
         _t0 = time.time()
         try:
             out = await t.ainvoke(args)
             ok = not str(out).lstrip().startswith(("❌", "⚠️", "🚫"))
-            emit("tool_end", f"{name}: {str(out)[:100]}", tool=name, ms=int((time.time() - _t0) * 1000),
-                 status="ok" if ok else "fail", detail=str(out)[:300])
+            emit(
+                "tool_end",
+                f"{name}: {str(out)[:100]}",
+                tool=name,
+                ms=int((time.time() - _t0) * 1000),
+                status="ok" if ok else "fail",
+                detail=str(out)[:300],
+            )
             rec = _tool_call_record(name, args, str(out))
-            rec["source"] = "deterministic"        # LLM se nahi, verification loop se chala
+            rec["source"] = "deterministic"  # LLM se nahi, verification loop se chala
             records.append(rec)
         except Exception as exc:
-            emit("error", f"{name} fail: {str(exc)[:140]}", tool=name, status="fail",
-                 ms=int((time.time() - _t0) * 1000))
-            records.append({"name": name, "args": args, "ok": False, "output": f"error: {exc}",
-                            "source": "deterministic"})
+            emit(
+                "error", f"{name} fail: {str(exc)[:140]}", tool=name, status="fail", ms=int((time.time() - _t0) * 1000)
+            )
+            records.append(
+                {"name": name, "args": args, "ok": False, "output": f"error: {exc}", "source": "deterministic"}
+            )
 
-    for a in (action.get("actions") or []):
+    for a in action.get("actions") or []:
         kind = a.get("kind")
         if kind == "open_app":
             target = a.get("app") or ""
@@ -624,16 +736,29 @@ async def _execute_desktop_action(action: dict[str, Any], tools: list) -> list[d
         else:
             # PEHLE: unknown kind chup-chaap skip ho jata tha → calls khali → "kuch hua hi nahi"
             # ka confusion aur success claim ka rasta. Ab explicit failure record banta hai.
-            records.append({"name": f"unsupported_action:{kind}", "args": dict(a), "ok": False,
-                            "output": f"(action kind '{kind}' is version me supported nahi hai — "
-                                      f"kaam nahi hua)", "source": "deterministic"})
+            records.append(
+                {
+                    "name": f"unsupported_action:{kind}",
+                    "args": dict(a),
+                    "ok": False,
+                    "output": f"(action kind '{kind}' is version me supported nahi hai — kaam nahi hua)",
+                    "source": "deterministic",
+                }
+            )
 
     # invariant: har action ka ek record hona chahiye — warna "kuch hua nahi" ka pata nahi chalega
     expected = len(action.get("actions") or [])
     if len(records) != expected:
-        records.append({"name": "action_record_invariant", "args": {}, "ok": False,
-                        "output": f"(records={len(records)} expected={expected} — execution tracking "
-                                  f"adhoora hai, isliye fail maana jaye)", "source": "deterministic"})
+        records.append(
+            {
+                "name": "action_record_invariant",
+                "args": {},
+                "ok": False,
+                "output": f"(records={len(records)} expected={expected} — execution tracking "
+                f"adhoora hai, isliye fail maana jaye)",
+                "source": "deterministic",
+            }
+        )
     return records
 
 
@@ -653,8 +778,9 @@ def _needs_action(request: str) -> bool:
     if not any(k in low for k in _ACTION_KEYS):
         return False
     # pure sawaal (kaise karein / kya hai / batao) → action nahi
-    if re.search(r"\b(kaise|how to|kya hai|batao|samjhao|explain|tutorial|steps)\b", low) \
-            and not re.search(rf"\b({_OPEN_VERBS}|{_TYPE_VERBS})\b", low):
+    if re.search(r"\b(kaise|how to|kya hai|batao|samjhao|explain|tutorial|steps)\b", low) and not re.search(
+        rf"\b({_OPEN_VERBS}|{_TYPE_VERBS})\b", low
+    ):
         return False
     return True
 
@@ -705,15 +831,33 @@ def _looks_like_failure(output: str) -> bool:
     low = (output or "").strip().lower()
     if not low:
         return False
-    bad = ("❌", "error:", "traceback", " not found", "not found", "nahi mila", "fail hua",
-           "fail:", "install karo", "unavailable", "permission denied", "access is denied",
-           "module not found", "no module named", "exception")
+    bad = (
+        "❌",
+        "error:",
+        "traceback",
+        " not found",
+        "not found",
+        "nahi mila",
+        "fail hua",
+        "fail:",
+        "install karo",
+        "unavailable",
+        "permission denied",
+        "access is denied",
+        "module not found",
+        "no module named",
+        "exception",
+    )
     return any(b in low for b in bad) and "✅" not in low[:6]
 
 
 def _tool_call_record(name: str, args: Any, output: str) -> dict[str, Any]:
-    return {"name": name, "args": args if isinstance(args, dict) else {"_raw": str(args)[:120]},
-            "output": str(output)[:800], "ok": not _looks_like_failure(str(output))}
+    return {
+        "name": name,
+        "args": args if isinstance(args, dict) else {"_raw": str(args)[:120]},
+        "output": str(output)[:800],
+        "ok": not _looks_like_failure(str(output)),
+    }
 
 
 async def _run_react_subagent(role: str, task: str, tools: list, raw_request: str = "") -> SubAgentRun:
@@ -764,18 +908,27 @@ async def _run_react_subagent(role: str, task: str, tools: list, raw_request: st
             if isinstance(m, AIMessage):
                 if isinstance(m.content, str) and m.content.strip():
                     texts.append(m.content)
-                for tc in (getattr(m, "tool_calls", None) or []):
+                for tc in getattr(m, "tool_calls", None) or []:
                     tcid = tc.get("id") or tc.get("name") or f"call{len(pending)}"
                     pending[tcid] = {"name": tc.get("name") or "tool", "args": tc.get("args") or {}}
             elif m.__class__.__name__ == "ToolMessage":
                 tcid = getattr(m, "tool_call_id", "") or ""
                 meta = pending.pop(tcid, {}) or {}
-                calls.append(_tool_call_record(meta.get("name", getattr(m, "name", "tool") or "tool"),
-                                               meta.get("args", {}), str(m.content)))
+                calls.append(
+                    _tool_call_record(
+                        meta.get("name", getattr(m, "name", "tool") or "tool"), meta.get("args", {}), str(m.content)
+                    )
+                )
         # jinke result nahi aaya (aborted) unhe bhi record karo
         for meta in pending.values():
-            calls.append({"name": meta.get("name", "tool"), "args": meta.get("args", {}),
-                          "output": "(tool result nahi aaya — call aborted)", "ok": False})
+            calls.append(
+                {
+                    "name": meta.get("name", "tool"),
+                    "args": meta.get("args", {}),
+                    "output": "(tool result nahi aaya — call aborted)",
+                    "ok": False,
+                }
+            )
 
         body = texts[-1] if texts else "(subagent ne kuch nahi kaha)"
         if calls:
@@ -786,8 +939,10 @@ async def _run_react_subagent(role: str, task: str, tools: list, raw_request: st
         # Isliye loud fail: user ko saaf reason, aur graph ise error ke roop me record karta hai.
         emit("error", f"tools model ke saath bind nahi hue — {str(exc)[:160]}", status="fail")
         return SubAgentRun(
-            text=("⚠️ is kaam ke liye tools ko model ke saath bind nahi kiya ja saka, aur bina "
-                  "tools ke jawab dena galat hota — isliye ruk gaya. Reason: " + str(exc)),
+            text=(
+                "⚠️ is kaam ke liye tools ko model ke saath bind nahi kiya ja saka, aur bina "
+                "tools ke jawab dena galat hota — isliye ruk gaya. Reason: " + str(exc)
+            ),
             error=f"tool_binding_failed: {str(exc)[:200]}",
         )
     except Exception as exc:
@@ -801,9 +956,13 @@ async def _offline_tool_run(task: str, tools: list) -> tuple[str, list[dict[str,
     results: list[str] = []
     calls: list[dict[str, Any]] = []
     # Sawaal ko action na samjho: "notepad kaise kholte hain" par app open karna galat tha.
-    question_only = bool(re.search(r"\b(kaise|kaisay|how to|kya hai|batao|samjhao|explain|tutorial|"
-                                   r"steps|kyun|kyu)\b", low)) and not re.search(
-        rf"\b({_OPEN_VERBS}|{_TYPE_VERBS})\b\s*[:\-]?\s*\S*\s*(likho|likh|type)?$", low)
+    question_only = bool(
+        re.search(
+            r"\b(kaise|kaisay|how to|kya hai|batao|samjhao|explain|tutorial|"
+            r"steps|kyun|kyu)\b",
+            low,
+        )
+    ) and not re.search(rf"\b({_OPEN_VERBS}|{_TYPE_VERBS})\b\s*[:\-]?\s*\S*\s*(likho|likh|type)?$", low)
 
     # loop guard: sirf *is run* ke andar duplicate call rokо — global/persistent memory se nahi.
     # (Pehle ye persistent store use karta tha, isliye same request doosri baar aate hi tool
@@ -818,8 +977,7 @@ async def _offline_tool_run(task: str, tools: list) -> tuple[str, list[dict[str,
         `ok` = tool chala aur result mila. Outcome ka content `output` me hota hai; search jaise
         cases me `found` field alag se rakhi jaati hai taaki "kuch nahi mila" ko success na samjha jaye.
         """
-        rec = {"name": name, "args": args, "output": str(output)[:800], "ok": bool(ok),
-               "source": "deterministic"}
+        rec = {"name": name, "args": args, "output": str(output)[:800], "ok": bool(ok), "source": "deterministic"}
         rec.update(extra)
         calls.append(rec)
 
@@ -832,20 +990,24 @@ async def _offline_tool_run(task: str, tools: list) -> tuple[str, list[dict[str,
             count = seen_this_run.get(sig, 0)
             seen_this_run[sig] = count + 1
             if count >= 2:
-                emit("warn", f"{name} skip (loop guard — yahi call pehle hui thi)", tool=name,
-                     status="skipped")
+                emit("warn", f"{name} skip (loop guard — yahi call pehle hui thi)", tool=name, status="skipped")
                 results.append(f"[{name}] skipped (loop guard: yahi call pehle bhi hui thi)")
                 return
         except Exception:
             pass
-        emit("tool_start", f"{name} chala raha hoon", tool=name,
-             detail=json.dumps(args, default=str)[:160])
+        emit("tool_start", f"{name} chala raha hoon", tool=name, detail=json.dumps(args, default=str)[:160])
         _t0 = time.time()
         try:
             out = await t.ainvoke(args)
             _ok = not str(out).lstrip().startswith(("❌", "⚠️", "🚫", "🚫"))
-            emit("tool_end", f"{name}: {str(out)[:100]}", tool=name, status="ok" if _ok else "fail",
-                 ms=int((time.time() - _t0) * 1000), detail=str(out)[:300])
+            emit(
+                "tool_end",
+                f"{name}: {str(out)[:100]}",
+                tool=name,
+                status="ok" if _ok else "fail",
+                ms=int((time.time() - _t0) * 1000),
+                detail=str(out)[:300],
+            )
             results.append(f"[{name}] {str(out)[:600]}")
             calls.append(_tool_call_record(name, args, str(out)))
             try:
@@ -853,8 +1015,9 @@ async def _offline_tool_run(task: str, tools: list) -> tuple[str, list[dict[str,
             except Exception:
                 pass
         except Exception as exc:
-            emit("error", f"{name} fail: {str(exc)[:140]}", tool=name, status="fail",
-                 ms=int((time.time() - _t0) * 1000))
+            emit(
+                "error", f"{name} fail: {str(exc)[:140]}", tool=name, status="fail", ms=int((time.time() - _t0) * 1000)
+            )
             results.append(f"[{name}] error: {exc}")
             calls.append({"name": name, "args": args, "output": f"error: {exc}", "ok": False})
             try:
@@ -863,24 +1026,56 @@ async def _offline_tool_run(task: str, tools: list) -> tuple[str, list[dict[str,
                 pass
 
     # ---- automations: "har subah 8 baje X" / "har ghante Y" / "remind me" ----
-    if any(k in low for k in ("har subah", "har sham", "har shaam", "har raat", "har din", "daily",
-                              "every day", "every hour", "har ghante", "har ghanta", "every ",
-                              "remind", "yaad dila", "schedule", "automation banao", "kal ")):
-        m = re.search(r"(har\s+[\w\s]{0,20}?\s*\d{1,2}(?::\d{2})?\s*(?:am|pm|baje)?|"
-                      r"daily\s*\d{1,2}(?::\d{2})?|every\s*\d*\s*\w+|kal\s*\d{1,2}(?::\d{2})?\s*(?:am|pm|baje)?|"
-                      r"\d{1,2}(?::\d{2})?\s*(?:am|pm|baje))", task, re.I)
+    if any(
+        k in low
+        for k in (
+            "har subah",
+            "har sham",
+            "har shaam",
+            "har raat",
+            "har din",
+            "daily",
+            "every day",
+            "every hour",
+            "har ghante",
+            "har ghanta",
+            "every ",
+            "remind",
+            "yaad dila",
+            "schedule",
+            "automation banao",
+            "kal ",
+        )
+    ):
+        m = re.search(
+            r"(har\s+[\w\s]{0,20}?\s*\d{1,2}(?::\d{2})?\s*(?:am|pm|baje)?|"
+            r"daily\s*\d{1,2}(?::\d{2})?|every\s*\d*\s*\w+|kal\s*\d{1,2}(?::\d{2})?\s*(?:am|pm|baje)?|"
+            r"\d{1,2}(?::\d{2})?\s*(?:am|pm|baje))",
+            task,
+            re.I,
+        )
         sched = m.group(1).strip() if m else "daily 08:00"
         await _call("create_automation", {"task": task, "schedule": sched})
 
     # ---- system ops: refresh / status / cache / process clear ----
-    if any(k in low for k in ("refresh", "reload", "dobara load", "cache", "system status",
-                              "machine ki halat", "kya haal hai system", "system info")):
+    if any(
+        k in low
+        for k in (
+            "refresh",
+            "reload",
+            "dobara load",
+            "cache",
+            "system status",
+            "machine ki halat",
+            "kya haal hai system",
+            "system info",
+        )
+    ):
         if any(k in low for k in ("refresh", "reload", "dobara load", "cache")):
             await _call("refresh_system_tool", {"clear_caches": True})
         else:
             await _call("full_system_status", {})
-    if ("process" in low or "background" in low) and any(
-            k in low for k in ("clear", "band", "kill", "hata", "rok")):
+    if ("process" in low or "background" in low) and any(k in low for k in ("clear", "band", "kill", "hata", "rok")):
         await _call("clear_process_tool", {})
 
     # ---- seedha typing: "notepad me hello likho" (offline) ----
@@ -888,16 +1083,30 @@ async def _offline_tool_run(task: str, tools: list) -> tuple[str, list[dict[str,
         typed = ""
         m_typed = re.search(r"(.+?)\s*(?:likho|likh do|type karo|type)\s*$", task, re.I)
         if m_typed:
-            typed = m_typed.group(1).strip(' .,:"\'“”‘’')
+            typed = m_typed.group(1).strip(" .,:\"'“”‘’")
             typed = re.sub(rf"^.*?\b(?:{_OPEN_VERBS}|me|mein|usme|usmein|par|pe|upar)\b[\s,]*", "", typed, flags=re.I)
         if typed and len(typed) >= 2 and any(k in low for k in ("likho", "likh", "type")):
             await _call("type_text", {"text": typed[:300], "press_enter": False})
 
     # ---- note save? (sirf jab save karne ko kaha ho, sirf 'note' word se nahi) ----
-    if any(k in low for k in ("save kar", "save kardo", "save krdo", "likh do", "likh de",
-                              "notepad me", "note me save", "note bana", "note banao")):
-        await _call("save_note", {"name": _extract_note_name(task), "content": _extract_note_body(task),
-                                  "open_in_notepad": False})
+    if any(
+        k in low
+        for k in (
+            "save kar",
+            "save kardo",
+            "save krdo",
+            "likh do",
+            "likh de",
+            "notepad me",
+            "note me save",
+            "note bana",
+            "note banao",
+        )
+    ):
+        await _call(
+            "save_note",
+            {"name": _extract_note_name(task), "content": _extract_note_body(task), "open_in_notepad": False},
+        )
 
     # ---- app kholna (ab kisi bhi naam se — search based) ----
     # question_only: "notepad kaise kholte hain" par app kholna galat tha (kaise/tutorial).
@@ -907,11 +1116,14 @@ async def _offline_tool_run(task: str, tools: list) -> tuple[str, list[dict[str,
             await _call("open_any_app", {"query": hint})
 
     # ---- file dhoondhna + padhna (asli offline power) ----
-    want_read = any(k in low for k in ("padho", "padh", "read", "kya likha", "summary", "summar",
-                                       "dikhao", "nikaal", "dekh"))
+    want_read = any(
+        k in low for k in ("padho", "padh", "read", "kya likha", "summary", "summar", "dikhao", "nikaal", "dekh")
+    )
     want_find = any(k in low for k in ("dhoondh", "find", "kahan hai", "dhundo", "locate", "search"))
-    if want_find or (want_read and any(n in low for n in ("file", "notes", "note", "pdf", "excel",
-                                                          "csv", "docx", "folder", "report"))):
+    if want_find or (
+        want_read
+        and any(n in low for n in ("file", "notes", "note", "pdf", "excel", "csv", "docx", "folder", "report"))
+    ):
         hint = _extract_file_hint(task)
         exts = _ext_filter(task)
         if hint:
@@ -919,33 +1131,56 @@ async def _offline_tool_run(task: str, tools: list) -> tuple[str, list[dict[str,
             if not hits and exts:
                 loose = await _local_file_find(hint, limit=3)
                 if loose:
-                    results.append(f"[find_files] '{hint}' ki file mili par wo {', '.join(exts)} type ki nahi hai: "
-                                   + ", ".join(f"{l['name']} ({l['score']}%)" for l in loose))
+                    results.append(
+                        f"[find_files] '{hint}' ki file mili par wo {', '.join(exts)} type ki nahi hai: "
+                        + ", ".join(f"{l['name']} ({l['score']}%)" for l in loose)
+                    )
             if not hits:
-                results.append(f"[find_files] '{hint}' naam ki koi file nahi mili "
-                               f"({'/'.join(exts) if exts else 'koi bhi type'}, roots: {', '.join(FILE_SEARCH_ROOTS)})")
+                results.append(
+                    f"[find_files] '{hint}' naam ki koi file nahi mili "
+                    f"({'/'.join(exts) if exts else 'koi bhi type'}, roots: {', '.join(FILE_SEARCH_ROOTS)})"
+                )
                 # search chali (ye asli tool call hai) par kuch nahi mila → found=False
-                _record("find_files", {"name": hint, "exts": list(exts)},
-                        f"0 matches ('{hint}', {('/'.join(exts)) if exts else 'any type'}, "
-                        f"roots: {', '.join(FILE_SEARCH_ROOTS)})", ok=True, found=False)
+                _record(
+                    "find_files",
+                    {"name": hint, "exts": list(exts)},
+                    f"0 matches ('{hint}', {('/'.join(exts)) if exts else 'any type'}, "
+                    f"roots: {', '.join(FILE_SEARCH_ROOTS)})",
+                    ok=True,
+                    found=False,
+                )
             else:
                 top = hits[0]
                 alt = ", ".join(f"{h['name']} ({h['score']}%)" for h in hits[1:4])
-                results.append(f"[find_files] {len(hits)} match{' (' + '/'.join(exts) + ')' if exts else ''}"
-                               f" • best: {top['name']} ({top['score']}%)"
-                               f"\n   {top['path']}" + (f"\n   aur bhi: {alt}" if alt else ""))
-                _record("find_files", {"name": hint, "exts": list(exts)},
-                        f"{len(hits)} match • best: {top['name']} ({top['score']}%) → {top['path']}"
-                        + (f" • aur: {alt}" if alt else ""), ok=True, found=True,
-                        path=top["path"])
+                results.append(
+                    f"[find_files] {len(hits)} match{' (' + '/'.join(exts) + ')' if exts else ''}"
+                    f" • best: {top['name']} ({top['score']}%)"
+                    f"\n   {top['path']}" + (f"\n   aur bhi: {alt}" if alt else "")
+                )
+                _record(
+                    "find_files",
+                    {"name": hint, "exts": list(exts)},
+                    f"{len(hits)} match • best: {top['name']} ({top['score']}%) → {top['path']}"
+                    + (f" • aur: {alt}" if alt else ""),
+                    ok=True,
+                    found=True,
+                    path=top["path"],
+                )
                 if want_read:
                     body = await _local_file_read(top["path"], max_chars=1500)
                     results.append(f"[read_file] 📄 {top['name']}\n{body}")
-                    _record("read_file", {"path": top["path"], "max_chars": 1500},
-                            f"📄 {top['name']} ({len(body or '')} chars)", ok=bool(body),
-                            found=bool(body), path=top["path"])
+                    _record(
+                        "read_file",
+                        {"path": top["path"], "max_chars": 1500},
+                        f"📄 {top['name']} ({len(body or '')} chars)",
+                        ok=bool(body),
+                        found=bool(body),
+                        path=top["path"],
+                    )
     if not results:
-        results.append("(offline desktop worker: koi concrete tool action match nahi hua — plan ke steps: " + task[:200] + ")")
+        results.append(
+            "(offline desktop worker: koi concrete tool action match nahi hua — plan ke steps: " + task[:200] + ")"
+        )
     return "\n".join(results), calls
 
 
@@ -956,8 +1191,6 @@ WORKER_NODES = {
     "desktop": desktop_worker,
     "memory": memory_worker,
 }
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -972,19 +1205,50 @@ def _extract_file_hint(task: str) -> str:
     m = re.search(r"([\w\-]{2,50}\.\w{2,5})\b", t)
     if m:
         return m.group(1).strip()
-    m = re.search(r"([\w\-]{3,50})\s+(?:wala|wali|wale|ka|ki|ke|naam\s+ki|naam\s+ka)?\s*"
-                  r"(?:file|files|notes?|pdf|excel|csv|docx|folder|document|report|sheet)", t, re.I)
+    m = re.search(
+        r"([\w\-]{3,50})\s+(?:wala|wali|wale|ka|ki|ke|naam\s+ki|naam\s+ka)?\s*"
+        r"(?:file|files|notes?|pdf|excel|csv|docx|folder|document|report|sheet)",
+        t,
+        re.I,
+    )
     if m:
         return _clean_hint(m.group(1))
-    m = re.search(r"(?:file|notes?|pdf|excel|docx|folder|document|report)\s+"
-                  r"(?:named?|naam\s+ki|jisda?\s+naam)?\s*([\w\-]{3,50})", t, re.I)
+    m = re.search(
+        r"(?:file|notes?|pdf|excel|docx|folder|document|report)\s+"
+        r"(?:named?|naam\s+ki|jisda?\s+naam)?\s*([\w\-]{3,50})",
+        t,
+        re.I,
+    )
     if m:
         return _clean_hint(m.group(1))
     return ""
 
 
-_STOP_HINTS = {"workspace", "jo", "wo", "woh", "mein", "me", "meri", "mera", "the", "file", "koi",
-               "ko", "se", "par", "pe", "ek", "kya", "hai", "kaun", "kahan", "jarvis", "merko", "mujhe"}
+_STOP_HINTS = {
+    "workspace",
+    "jo",
+    "wo",
+    "woh",
+    "mein",
+    "me",
+    "meri",
+    "mera",
+    "the",
+    "file",
+    "koi",
+    "ko",
+    "se",
+    "par",
+    "pe",
+    "ek",
+    "kya",
+    "hai",
+    "kaun",
+    "kahan",
+    "jarvis",
+    "merko",
+    "mujhe",
+}
 
 
 def _clean_hint(hint: str) -> str:
@@ -1004,11 +1268,25 @@ def _extract_app_hint(task: str) -> str:
 
 
 _EXT_HINTS: dict[str, tuple[str, ...]] = {
-    "pdf": (".pdf",), "word": (".docx", ".doc"), "docx": (".docx",), "excel": (".xlsx", ".xls", ".csv"),
-    "xlsx": (".xlsx",), "sheet": (".xlsx", ".csv"), "csv": (".csv",), "ppt": (".pptx",),
-    "powerpoint": (".pptx",), "image": (".png", ".jpg", ".jpeg", ".webp", ".gif"), "photo": (".png", ".jpg", ".jpeg"),
-    "screenshot": (".png", ".jpg"), "markdown": (".md",), "note": (".md", ".txt"), "notes": (".md", ".txt"),
-    "text": (".txt",), "txt": (".txt",), "json": (".json",), "zip": (".zip",),
+    "pdf": (".pdf",),
+    "word": (".docx", ".doc"),
+    "docx": (".docx",),
+    "excel": (".xlsx", ".xls", ".csv"),
+    "xlsx": (".xlsx",),
+    "sheet": (".xlsx", ".csv"),
+    "csv": (".csv",),
+    "ppt": (".pptx",),
+    "powerpoint": (".pptx",),
+    "image": (".png", ".jpg", ".jpeg", ".webp", ".gif"),
+    "photo": (".png", ".jpg", ".jpeg"),
+    "screenshot": (".png", ".jpg"),
+    "markdown": (".md",),
+    "note": (".md", ".txt"),
+    "notes": (".md", ".txt"),
+    "text": (".txt",),
+    "txt": (".txt",),
+    "json": (".json",),
+    "zip": (".zip",),
 }
 
 
@@ -1024,9 +1302,35 @@ def _ext_filter(task: str) -> tuple[str, ...]:
     return tuple(out)
 
 
-_NOTE_NAME_STOP = {"karo", "kar", "krdo", "kardo", "likho", "likh", "de", "do", "save", "notepad",
-                   "me", "file", "banao", "bana", "naam", "name", "se", "aur", "content", "ek", "ye",
-                   "is", "ko", "note", "wala", "wali", "bhai"}
+_NOTE_NAME_STOP = {
+    "karo",
+    "kar",
+    "krdo",
+    "kardo",
+    "likho",
+    "likh",
+    "de",
+    "do",
+    "save",
+    "notepad",
+    "me",
+    "file",
+    "banao",
+    "bana",
+    "naam",
+    "name",
+    "se",
+    "aur",
+    "content",
+    "ek",
+    "ye",
+    "is",
+    "ko",
+    "note",
+    "wala",
+    "wali",
+    "bhai",
+}
 
 
 def _extract_note_body(task: str) -> str:
@@ -1052,14 +1356,20 @@ def _extract_note_body(task: str) -> str:
         r"^\s*(?:jarvis[,\s]+)?(?:notes?|note\s*pad|notepad|file)\s*(?:me(?:in)?)?\s*"
         r"(?:ye|yeh)?\s*[\w\-\. ]{0,40}?\s*(?:naam|name)\s*(?:se|rakh\w*|ke\s*naam\s*se)?\s*(?:ke|kar|karke)?\s*"
         r"(?:ye|yeh)?\s*(?:save\s*kar\w*|likh\s*(?:do|de|ke\s*rakh\w*)|rakh\w*|store\s*kar\w*)\s*[:,-]?\s*",
-        "", t, flags=re.I,
+        "",
+        t,
+        flags=re.I,
     ).strip()
     if body and body != t:
         return body
 
     # 3) generic "ye save kardo ..." / "save kardo ..."
-    body = re.sub(r"^\s*(?:jarvis[,\s]+)?(?:ye\s*|yeh\s*)?(?:save\s*kar\w*|likh\s*(?:do|de)|store\s*kar\w*)\s*[:,-]?\s*",
-                  "", t, flags=re.I).strip()
+    body = re.sub(
+        r"^\s*(?:jarvis[,\s]+)?(?:ye\s*|yeh\s*)?(?:save\s*kar\w*|likh\s*(?:do|de)|store\s*kar\w*)\s*[:,-]?\s*",
+        "",
+        t,
+        flags=re.I,
+    ).strip()
     return body or t
 
 
@@ -1132,9 +1442,25 @@ async def _local_file_read(path: str, max_chars: int = 1500) -> str:
 # ---------------------------------------------------------------------------
 # HONESTY GUARD — "kar diya" sirf tab jab tool ne kiya ho
 # ---------------------------------------------------------------------------
-_SUCCESS_CLAIMS = ("kar diya", "kar di", "ho gaya", "ho gya", "done", "likh diya", "likh di",
-                   "khol diya", "khol di", "band kar diya", "save kar diya", "bhej diya",
-                   "chala diya", "complete", "successfully", "ban gaya", "ban diya")
+_SUCCESS_CLAIMS = (
+    "kar diya",
+    "kar di",
+    "ho gaya",
+    "ho gya",
+    "done",
+    "likh diya",
+    "likh di",
+    "khol diya",
+    "khol di",
+    "band kar diya",
+    "save kar diya",
+    "bhej diya",
+    "chala diya",
+    "complete",
+    "successfully",
+    "ban gaya",
+    "ban diya",
+)
 _RAKH_DOWN = ("khaali", "khali")
 
 
@@ -1197,8 +1523,9 @@ def honesty_guard(state: JarvisState, answer: str) -> tuple[str, str]:
             # chal hi gayi thi; bas result khali tha.
             search_only = all(str(r.get("name") or "") in {"find_files", "read_file"} for r in ev_done)
             state["status"] = "done" if search_only else "failed"
-            reason = ("search ran but nothing was found"
-                      if search_only else "execution ran but nothing was found / no effect")
+            reason = (
+                "search ran but nothing was found" if search_only else "execution ran but nothing was found / no effect"
+            )
             return (
                 f"⚠️ **Ye claim verify nahi hua, {OWNER_NAME}.**\n\n"
                 f"Tool(s) chale, par kuch mila nahi / koi asar nahi hua:\n{_fmt(ev_done)}\n\n"
@@ -1230,9 +1557,11 @@ def honesty_guard(state: JarvisState, answer: str) -> tuple[str, str]:
         state["status"] = "partial_failure"
         # Warning HAMESHA sabse upar — warna pehli line ("Ho gaya boss ✅") padh kar
         # user ko lagta hai kaam ho gaya, jabki ek step fail hua tha.
-        head = (f"⚠️ **Aadha kaam hua, {OWNER_NAME}.**\n\n"
-                f"✅ Jo hua:\n{_fmt(done) if done else '—'}\n\n"
-                f"❌ Jo fail hua:\n{_fmt(failed)}\n\n---\n")
+        head = (
+            f"⚠️ **Aadha kaam hua, {OWNER_NAME}.**\n\n"
+            f"✅ Jo hua:\n{_fmt(done) if done else '—'}\n\n"
+            f"❌ Jo fail hua:\n{_fmt(failed)}\n\n---\n"
+        )
         body_lines = (answer or "").split("\n")
         # pehli line me jhooti success claim ho to hata do
         if body_lines and _claims_success(body_lines[0]):
@@ -1248,7 +1577,18 @@ def honesty_guard(state: JarvisState, answer: str) -> tuple[str, str]:
 async def synthesize_node(state: JarvisState) -> dict[str, Any]:
     emit("thinking", "Findings ko final jawab me likh raha hoon…")
     request = state.get("request", "")
-    evidence = evidence_digest(state)
+    # ---- BLIND-HANDOFF DETECTION: bina tool proof wali findings pakdo ----
+    blind = detect_blind_handoffs(state)
+    blind_workers = [str(b.get("worker")) for b in blind]
+    blind_events: list[dict[str, Any]] = []
+    if blind:
+        for b in blind:
+            msg = f"blind_handoff: {b.get('worker')} ne bina tool evidence summary di ({b.get('reason')})"
+            if isinstance(state.get("errors"), list):
+                state.setdefault("errors", []).append(msg)
+            blind_events.append(_event(state, "blind_handoff", msg))
+            emit("error", msg)
+    evidence = evidence_digest(state, blind=blind_workers)
     critique = state.get("critique") or {}
     critique_text = json.dumps(critique, ensure_ascii=False)[:1500] if critique else ""
     iterations = state.get("iterations", 0)
@@ -1278,7 +1618,9 @@ async def synthesize_node(state: JarvisState) -> dict[str, Any]:
                 answer = str(resp.content).strip()
             except Exception as exc:
                 answer = ""
-                state.setdefault("errors", []).append(f"synthesize: {exc}" if isinstance(state.get("errors"), list) else "synthesize error")
+                state.setdefault("errors", []).append(
+                    f"synthesize: {exc}" if isinstance(state.get("errors"), list) else "synthesize error"
+                )
 
     if not answer:
         answer = _offline_synthesize(state, evidence, iterations)
@@ -1309,11 +1651,14 @@ async def synthesize_node(state: JarvisState) -> dict[str, Any]:
         "answer": answer,
         "evidence": evidence,
         "execution_required": bool(verdict.tool_required),
-        "events": ([_event(state, "synthesize", f"{len(answer)} chars answer (iter {iterations + 1})")]
-                   + extra_events),
+        "events": (
+            [_event(state, "synthesize", f"{len(answer)} chars answer (iter {iterations + 1})")]
+            + blind_events
+            + extra_events
+        ),
     }
     if state.get("status") in ("failed", "partial_failure"):
-        out["status"] = state["status"]          # honest status upstream tak (AgentResult.status)
+        out["status"] = state["status"]  # honest status upstream tak (AgentResult.status)
     return out
 
 
@@ -1350,24 +1695,32 @@ def _offline_synthesize(state: JarvisState, evidence: str, iterations: int) -> s
     # "koi concrete tool action match nahi hua" = humne kuch kiya hi nahi.
     # Us case me "Ho gaya boss ✅" kehna jhooth lagta hai (khaas kar sawaal par).
     no_action_taken = bool(findings) and all(
-        ("koi concrete tool action match nahi hua" in str(f.get("summary", ""))
-         or "koi tool evidence nahi" in str(f.get("summary", ""))) for f in findings)
+        (
+            "koi concrete tool action match nahi hua" in str(f.get("summary", ""))
+            or "koi tool evidence nahi" in str(f.get("summary", ""))
+        )
+        for f in findings
+    )
     if failed_actions and not verified_actions:
         lines.append(f"❌ {OWNER_NAME}, ye kaam poora nahi hua — tool ne error diya:")
         lines.append("")
         lines += [f"• {c.get('name')} → {str(c.get('output'))[:160]}" for c in failed_actions[:4]]
         lines.append("")
     elif verification_failed:
-        lines.append(f"⚠️ {OWNER_NAME}, maine is request par koi tool call nahi kiya — "
-                     "matlab machine par kuch nahi hua. Sach bata raha hoon, guess nahi.")
+        lines.append(
+            f"⚠️ {OWNER_NAME}, maine is request par koi tool call nahi kiya — "
+            "matlab machine par kuch nahi hua. Sach bata raha hoon, guess nahi."
+        )
         lines.append("")
     if no_action_taken:
         lines.append(f"Samajh gaya, {OWNER_NAME} — is request par koi tool chalane ki zaroorat nahi padi.")
         lines.append("")
-        lines.append("Agar **kaam karwana** hai to seedha bolo, jaise: "
-                     "`notepad kholo`, `notepad open karke hello likho`, `screenshot lo`, "
-                     "`notes me x naam se save kardo: ...`. "
-                     "Aur agar **samajhna** hai to poocho, jaise: `notepad kaise kholte hain`.")
+        lines.append(
+            "Agar **kaam karwana** hai to seedha bolo, jaise: "
+            "`notepad kholo`, `notepad open karke hello likho`, `screenshot lo`, "
+            "`notes me x naam se save kardo: ...`. "
+            "Aur agar **samajhna** hai to poocho, jaise: `notepad kaise kholte hain`."
+        )
         head = []
     elif head:
         if not (failed_actions and not verified_actions) and not verification_failed:
@@ -1379,8 +1732,10 @@ def _offline_synthesize(state: JarvisState, evidence: str, iterations: int) -> s
     else:
         lines.append(f"Samajh gaya: _{request[:160]}_")
         lines.append("")
-        lines.append("Offline demo mode me main ise rule-based handle kar raha hoon — koi tool "
-                     "isi request ke liye match nahi hua.")
+        lines.append(
+            "Offline demo mode me main ise rule-based handle kar raha hoon — koi tool "
+            "isi request ke liye match nahi hua."
+        )
     if notes:
         lines.append(f"\n📝 Note save hua: {', '.join(str(n)[:40] for n in notes[:3])}")
     if artifacts:
@@ -1388,9 +1743,11 @@ def _offline_synthesize(state: JarvisState, evidence: str, iterations: int) -> s
 
     if PROVIDER == "demo":
         lines.append("")
-        lines.append(f"_OFFLINE / DEMO MODE_ — key daalte hi yahi request {OWNER_NAME} ke configured brain "
-                     "se chalegi: research → browser → code → verify → answer. "
-                     "`python -m jarvis doctor` se check karo.")
+        lines.append(
+            f"_OFFLINE / DEMO MODE_ — key daalte hi yahi request {OWNER_NAME} ke configured brain "
+            "se chalegi: research → browser → code → verify → answer. "
+            "`python -m jarvis doctor` se check karo."
+        )
     return "\n".join(lines)
 
 
@@ -1413,9 +1770,19 @@ async def critic_node(state: JarvisState) -> dict[str, Any]:
             score -= 0.2
         if len(answer) < 80:
             score -= 0.25
-        verdict = {"ok": score >= 0.6, "score": max(0.0, min(1.0, score)),
-                   "missing": [] if score >= 0.6 else ["answer chhota/incomplete lag raha hai"],
-                   "fix_hint": "" if score >= 0.6 else "errors dekho aur failed worker dobara chalao"}
+        blind_here = detect_blind_handoffs(state)
+        missing: list[str] = []
+        fix_hint = ""
+        if blind_here:
+            # blind handoff = sabse bada gap: proof ke bina claim — refine pakka
+            score = min(score, 0.3)
+            names = sorted({str(b.get("worker")) for b in blind_here})
+            missing.append("blind handoff: bina tool proof wali findings (" + ", ".join(names) + ")")
+            fix_hint = "blind worker(s) dobara chalao, is baar ASLI tool call karke: " + ", ".join(names)
+        elif score < 0.6:
+            missing.append("answer chhota/incomplete lag raha hai")
+            fix_hint = "errors dekho aur failed worker dobara chalao"
+        verdict = {"ok": score >= 0.6, "score": max(0.0, min(1.0, score)), "missing": missing, "fix_hint": fix_hint}
 
     return {
         "critique": verdict,
@@ -1450,17 +1817,54 @@ async def refine_node(state: JarvisState) -> dict[str, Any]:
             return {
                 "iterations": MAX_GRAPH_ITERATIONS,  # critic ab persist par jayega
                 "fix_hint": "",
-                "events": [_event(state, "refine", f"LOOP DETECTED (sig {sig}) — refining band, best answer bhej rahe hain")],
+                "events": [
+                    _event(state, "refine", f"LOOP DETECTED (sig {sig}) — refining band, best answer bhej rahe hain")
+                ],
             }
     except Exception:
         pass
 
+    # TARGETED re-verify: sirf failed/blind workers dobara.
+    # NOTE: findings/tool_evidence `operator.add` reducers hain — purane records hataye nahi
+    # ja sakte, isliye blind findings digest me ⚠️UNVERIFIED mark ke saath rehte hain aur
+    # re-run ke NAYE findings append hote hain. Same targets dobara fail hon to STALL rok deta hai.
+    blind_names = {str(b.get("worker")) for b in detect_blind_handoffs(state)}
+    failed_names = {str(r.get("worker") or "") for r in evidence_records(state) if not r.get("ok")}
+    failed_names |= {
+        str(f.get("worker") or "")
+        for f in (state.get("findings") or [])
+        if isinstance(f, dict) and (f.get("lazy") or not (f.get("tool_calls") or []))
+    }
+    failed_names.discard("")
+    targets = sorted((blind_names | failed_names) & set(WORKER_NODES))
+    if not targets:
+        targets = [w for w in (state.get("workers") or []) if w in WORKER_NODES] or list(WORKER_NODES)
+    prev_targets = state.get("refine_targets") or []
+    if prev_targets and set(targets) == set(prev_targets):
+        # STALL: wahi workers dobara fail/blind — aur refine bekaar, best answer bhejo
+        try:
+            get_state().remember_error(f"refine stalled — same targets failed twice: {', '.join(targets)}")
+        except Exception:
+            pass
+        return {
+            "iterations": MAX_GRAPH_ITERATIONS,
+            "fix_hint": "",
+            "dispatch_targets": [],
+            "events": [
+                _event(
+                    state,
+                    "refine",
+                    f"STALLED (targets [{', '.join(targets)}] dobara fail) — refining band, best answer bhej rahe hain",
+                )
+            ],
+        }
     return {
         "iterations": iteration,
-        "request": f"{request}\n\n[REFINE PASS {iteration} — {hint}]",
+        "request": f"{request}\n\n[REFINE PASS {iteration} — {hint} | re-verify: {', '.join(targets)}]",
         "critique": {},
-        "findings": [],  # naya evidence
-        "events": [_event(state, "refine", f"pass {iteration}: {hint[:120]}")],
+        "refine_targets": targets,
+        "dispatch_targets": targets,
+        "events": [_event(state, "refine", f"pass {iteration}: re-verify [{', '.join(targets)}]")],
     }
 
 
@@ -1477,7 +1881,8 @@ async def persist_node(state: JarvisState) -> dict[str, Any]:
             st = get_state()
             st.finish_task(
                 status="done" if not state.get("errors") else "done_with_errors",
-                result=answer[:300], artifacts=state.get("artifacts", []),
+                result=answer[:300],
+                artifacts=state.get("artifacts", []),
             )
             st.set_pending_steps([])
         except Exception:
@@ -1509,11 +1914,20 @@ def build_reasoning_summary(state: JarvisState) -> list[str]:
         lines.append("TOOLS: " + ", ".join(tools_used[:8]))
     findings = state.get("findings") or []
     if findings:
-        lines.append("ACTION: " + " | ".join(
-            f"{f.get('worker', '?')} {f.get('seconds', '?')}s" for f in findings[:5]))
+        lines.append("ACTION: " + " | ".join(f"{f.get('worker', '?')} {f.get('seconds', '?')}s" for f in findings[:5]))
     evidence = state.get("evidence") or ""
     if evidence:
         lines.append(f"RESULT: {len(evidence)} chars evidence, {len(state.get('artifacts') or [])} artifact(s)")
+    try:
+        bal = session_evidence_summary(state)
+        lines.append(
+            f"EVIDENCE: {bal['verified']}/{bal['tool_calls']} tools verified"
+            + (f", {bal['failed']} failed" if bal["failed"] else "")
+            + (f", blind: {', '.join(bal['blind_findings'])}" if bal["blind_findings"] else "")
+            + f" → {bal['status']}"
+        )
+    except Exception:
+        pass
     critique = state.get("critique") or {}
     if critique:
         lines.append("VERIFICATION: " + str(critique.get("verdict") or critique.get("score") or "ok")[:100])
@@ -1572,10 +1986,14 @@ def after_route(state: JarvisState) -> str:
 
 
 def dispatch(state: JarvisState) -> Any:
-    """Workers ko parallel bhejo (LangGraph Send fan-out)."""
+    """Workers ko parallel bhejo (LangGraph Send fan-out).
+
+    Refine pass me `dispatch_targets` subset hota hai (sirf failed/blind workers dobara) —
+    warna poori `workers` list.
+    """
     from langgraph.types import Send
 
-    workers = state.get("workers", []) or ["answer"]
+    workers = state.get("dispatch_targets") or state.get("workers", []) or ["answer"]
     real_workers = [w for w in workers if w in WORKER_NODES]
     if not real_workers:
         return "synthesize"

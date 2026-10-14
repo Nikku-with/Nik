@@ -5,6 +5,7 @@ jarvis/graph/state.py — LangGraph state schema
 Ek shared state jo poore graph me flow karta hai. Reducers (`operator.add`) se
 parallel workers apna-apna hissa jodte hain — race condition nahi hoti.
 """
+
 from __future__ import annotations
 
 import operator
@@ -32,7 +33,7 @@ class JarvisState(TypedDict, total=False):
     plan: list[str]
     deliverable: str
     selected_tools: list[str]
-    reasoning_summary: list[str]     # PLAN / DECISION / ACTION / RESULT / VERIFICATION / NEXT
+    reasoning_summary: list[str]  # PLAN / DECISION / ACTION / RESULT / VERIFICATION / NEXT
 
     # ---- execution --------------------------------------------------------
     findings: Annotated[list[dict[str, Any]], operator.add]
@@ -46,6 +47,8 @@ class JarvisState(TypedDict, total=False):
     iterations: int
     critique: dict[str, Any]
     fix_hint: str
+    refine_targets: list[str]  # pichhle refine me kin workers ko re-verify kiya tha
+    dispatch_targets: list[str]  # is pass me kin workers ko chalana hai (subset = targeted)
 
     # ---- output -----------------------------------------------------------
     answer: str
@@ -54,11 +57,11 @@ class JarvisState(TypedDict, total=False):
     status: str
 
     # ---- action verification (LLM "kar diya" bole par tool chala hi na ho) ----
-    action_required: bool                            # request me koi asli action maanga gaya?
-    execution_required: bool                         # is run me asli tool execution chahiye thi?
-    tool_evidence: Annotated[list[dict[str, Any]], operator.add]     # verified tool records (sab workers)
-    actions_done: Annotated[list[dict[str, Any]], operator.add]      # actual tool calls (ok)
-    action_failures: Annotated[list[dict[str, Any]], operator.add]   # fail hue tool calls
+    action_required: bool  # request me koi asli action maanga gaya?
+    execution_required: bool  # is run me asli tool execution chahiye thi?
+    tool_evidence: Annotated[list[dict[str, Any]], operator.add]  # verified tool records (sab workers)
+    actions_done: Annotated[list[dict[str, Any]], operator.add]  # actual tool calls (ok)
+    action_failures: Annotated[list[dict[str, Any]], operator.add]  # fail hue tool calls
     events: Annotated[list[dict[str, Any]], operator.add]
 
 
@@ -80,13 +83,20 @@ def initial_state(request: str, session_id: str = "default", messages: list | No
         action_failures=[],
         iterations=0,
         critique={},
+        refine_targets=[],
+        dispatch_targets=[],
         events=[],
         status="running",
     )
 
 
-def evidence_digest(state: JarvisState, limit_per_item: int = 1800, total_limit: int = 9000) -> str:
-    """Findings ko ek readable evidence block me badlo (final answer/critic ke liye)."""
+def evidence_digest(state: JarvisState, limit_per_item: int = 1800, total_limit: int = 9000, blind: Any = ()) -> str:
+    """Findings ko ek readable evidence block me badlo (final answer/critic ke liye).
+
+    `blind`: blind-handoff worker names — unke chunks par ⚠️UNVERIFIED lagta hai
+    taaki synthesizer/critic unhe proof na samjhe.
+    """
+    blind_set = {str(w).lower() for w in (blind or [])}
     chunks: list[str] = []
     for i, f in enumerate(state.get("findings", []) or [], 1):
         worker = f.get("worker", "?")
@@ -94,12 +104,13 @@ def evidence_digest(state: JarvisState, limit_per_item: int = 1800, total_limit:
         if not summary:
             continue
         body = summary[:limit_per_item]
+        tag = " ⚠️UNVERIFIED (bina tool proof — is par bharosa mat karo)" if str(worker).lower() in blind_set else ""
         extra = ""
         if f.get("sites"):
             extra = f"\n  sites: {', '.join(str(s) for s in f['sites'][:6])}"
         if f.get("artifacts"):
             extra += f"\n  files: {', '.join(str(a) for a in f['artifacts'][:6])}"
-        chunks.append(f"[{i}] {worker}{extra}\n{body}")
+        chunks.append(f"[{i}] {worker}{tag}{extra}\n{body}")
 
     if not chunks:
         text = "(koi tool evidence nahi — direct answer path)"
@@ -121,6 +132,12 @@ def local_clock_line() -> str:
     now = datetime.now(IST)
     utc = datetime.now(timezone.utc)
     offset = now.utcoffset()
-    off = f"UTC{'+' if (offset or timedelta()).total_seconds() >= 0 else '-'}{abs(offset).seconds // 3600:02d}:{(abs(offset).seconds // 60) % 60:02d}" if offset else "UTC"
-    return (f"{now.strftime('%A, %d %B %Y — %I:%M %p')} ({now.tzname() or 'IST'}, {off})"
-            f" | UTC: {utc.strftime('%H:%M')} | epoch: {int(now.timestamp())}")
+    off = (
+        f"UTC{'+' if (offset or timedelta()).total_seconds() >= 0 else '-'}{abs(offset).seconds // 3600:02d}:{(abs(offset).seconds // 60) % 60:02d}"
+        if offset
+        else "UTC"
+    )
+    return (
+        f"{now.strftime('%A, %d %B %Y — %I:%M %p')} ({now.tzname() or 'IST'}, {off})"
+        f" | UTC: {utc.strftime('%H:%M')} | epoch: {int(now.timestamp())}"
+    )

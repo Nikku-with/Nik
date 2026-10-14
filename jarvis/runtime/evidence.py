@@ -20,16 +20,29 @@ Anti-regression: `tests/test_tool_invariant.py` is module ke rules ke saath-saat
 bhi check karta hai (banned pattern `bound.append(model)` dobara na aaye, aur tool-required
 paths ke bina text-only success na bane).
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
 
 __all__ = [
-    "ToolExecutionInvariantError", "TOOL_REQUIRED_WORKERS", "EXECUTION_CLAIMS",
-    "NEGATION_WORDS", "evidence_records", "has_verified_evidence", "failed_records",
-    "is_tool_required", "claims_execution", "require_tool_bound", "ExecutionVerdict",
-    "verify_execution", "supporting_records",
+    "ToolExecutionInvariantError",
+    "TOOL_REQUIRED_WORKERS",
+    "EXECUTION_CLAIMS",
+    "NEGATION_WORDS",
+    "evidence_records",
+    "has_verified_evidence",
+    "failed_records",
+    "is_tool_required",
+    "claims_execution",
+    "require_tool_bound",
+    "ExecutionVerdict",
+    "verify_execution",
+    "supporting_records",
+    "finding_is_blind",
+    "detect_blind_handoffs",
+    "session_evidence_summary",
 ]
 
 
@@ -43,15 +56,58 @@ TOOL_REQUIRED_WORKERS = frozenset({"desktop", "code", "browser", "ops", "automat
 # Execution claims (Hinglish + English). "done" jaisa generic shabd jaan-bujh kar list me nahi —
 # warna normal chit-chat par false positive aata hai.
 EXECUTION_CLAIMS = (
-    "kar diya", "kar di", "kr diya", "kr di", "khol diya", "khol di", "khul gaya", "khul gya",
-    "likh diya", "likh di", "type kar diya", "save kar diya", "save ho gaya", "band kar diya",
-    "bhej diya", "chala diya", "launch kar diya", "install kar diya", "create kar diya",
-    "opened", "launched", "executed", "ran successfully", "i have opened", "i've opened",
-    "i opened", "i have run", "i've run", "i ran", "i have executed", "i've executed",
-    "i saved", "i have saved", "i typed", "i wrote", "i deleted", "i sent", "i installed",
+    "kar diya",
+    "kar di",
+    "kr diya",
+    "kr di",
+    "khol diya",
+    "khol di",
+    "khul gaya",
+    "khul gya",
+    "likh diya",
+    "likh di",
+    "type kar diya",
+    "save kar diya",
+    "save ho gaya",
+    "band kar diya",
+    "bhej diya",
+    "chala diya",
+    "launch kar diya",
+    "install kar diya",
+    "create kar diya",
+    "opened",
+    "launched",
+    "executed",
+    "ran successfully",
+    "i have opened",
+    "i've opened",
+    "i opened",
+    "i have run",
+    "i've run",
+    "i ran",
+    "i have executed",
+    "i've executed",
+    "i saved",
+    "i have saved",
+    "i typed",
+    "i wrote",
+    "i deleted",
+    "i sent",
+    "i installed",
 )
-NEGATION_WORDS = ("nahi", "nahin", "not ", "n't", "fail", "fail hua", "couldn't", "could not",
-                  "unable", "nahi hua", "nahi ho paya")
+NEGATION_WORDS = (
+    "nahi",
+    "nahin",
+    "not ",
+    "n't",
+    "fail",
+    "fail hua",
+    "couldn't",
+    "could not",
+    "unable",
+    "nahi hua",
+    "nahi ho paya",
+)
 
 
 def supporting_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -104,10 +160,13 @@ _KEEP_KEYS = ("found", "path", "error", "seconds", "offline", "notes_saved", "si
 def _clean_record(rec: Any) -> dict[str, Any] | None:
     if not isinstance(rec, dict) or not rec.get("name"):
         return None
-    cleaned = {"name": str(rec.get("name")), "args": rec.get("args") or {},
-               "output": str(rec.get("output") or "")[:800],
-               "ok": bool(rec.get("ok", not _looks_failed(str(rec.get("output") or "")))),
-               "source": rec.get("source") or "tool"}
+    cleaned = {
+        "name": str(rec.get("name")),
+        "args": rec.get("args") or {},
+        "output": str(rec.get("output") or "")[:800],
+        "ok": bool(rec.get("ok", not _looks_failed(str(rec.get("output") or "")))),
+        "source": rec.get("source") or "tool",
+    }
     for key in _KEEP_KEYS:
         if key in rec:
             cleaned[key] = rec[key]
@@ -118,8 +177,19 @@ def _looks_failed(output: str) -> bool:
     low = (output or "").strip().lower()
     if not low:
         return False
-    bad = ("❌", "error:", "traceback", "not found", "nahi mila", "fail hua", "fail:",
-           "unavailable", "permission denied", "module not found", "exception")
+    bad = (
+        "❌",
+        "error:",
+        "traceback",
+        "not found",
+        "nahi mila",
+        "fail hua",
+        "fail:",
+        "unavailable",
+        "permission denied",
+        "module not found",
+        "exception",
+    )
     return any(b in low for b in bad) and "✅" not in low[:6]
 
 
@@ -134,19 +204,19 @@ def evidence_records(state: Any) -> list[dict[str, Any]]:
     if not isinstance(state, dict):
         return []
     out: list[dict[str, Any]] = []
-    for rec in (state.get("tool_evidence") or []):
+    for rec in state.get("tool_evidence") or []:
         cleaned = _clean_record(rec)
         if cleaned:
             out.append(cleaned)
     for key in ("actions_done", "action_failures"):
-        for rec in (state.get(key) or []):
+        for rec in state.get(key) or []:
             cleaned = _clean_record(rec)
             if cleaned:
                 out.append(cleaned)
-    for finding in (state.get("findings") or []):
+    for finding in state.get("findings") or []:
         if not isinstance(finding, dict):
             continue
-        for rec in (finding.get("tool_calls") or []):
+        for rec in finding.get("tool_calls") or []:
             cleaned = _clean_record(rec)
             if cleaned:
                 out.append(cleaned)
@@ -172,8 +242,7 @@ def is_tool_required(state: Any, request: str = "", workers: list[str] | None = 
     """
     if isinstance(state, dict) and (state.get("action_required") or state.get("execution_required")):
         return True
-    picked = workers if workers is not None else (
-        state.get("workers") if isinstance(state, dict) else None)
+    picked = workers if workers is not None else (state.get("workers") if isinstance(state, dict) else None)
     return bool(set(picked or []) & TOOL_REQUIRED_WORKERS)
 
 
@@ -208,6 +277,91 @@ def claims_without_support(state: Any, answer: str) -> bool:
     if not v.claim_words:
         return False
     return not supporting_records(v.ok_records) and not v.failed_records
+
+
+# ---------------------------------------------------------------------------
+# blind-handoff detection (worker ne tool chalaye bina summary pakda di)
+# ---------------------------------------------------------------------------
+LAZY_SUMMARIES = frozenset(
+    {
+        "",
+        "(khali — worker ne kuch report nahi kiya)",
+        "(worker ne khaali result diya)",
+    }
+)
+
+
+def finding_is_blind(finding: Any) -> tuple[bool, str]:
+    """Tool-required worker ki finding me tool proof hai ya hawa-hawai claim?
+
+    Blind = summary to hai par usko support karta koi ok tool record nahi.
+    Non-tool workers (research/memory/answer) yahan blind nahi gine jaate —
+    unka output text hota hai, machine action nahi.
+    """
+    if not isinstance(finding, dict):
+        return False, ""
+    worker = str(finding.get("worker") or "").lower()
+    if worker not in TOOL_REQUIRED_WORKERS:
+        return False, ""
+    summary = str(finding.get("summary") or "").strip()
+    if finding.get("lazy") or summary in LAZY_SUMMARIES:
+        return True, "worker ne khaali/lazy result diya (koi actual output nahi)"
+    calls = finding.get("tool_calls") or []
+    if not calls:
+        # state-level canonical records (tool_evidence) bhi proof chalenge —
+        # wo check caller (detect_blind_handoffs) karta hai; yahan sirf local signal.
+        return True, "summary hai par tool_calls khaali (bina tool chalaye claim)"
+    if not any(isinstance(c, dict) and c.get("ok", True) for c in calls):
+        return True, "saare tool calls fail — par summary success jaisa"
+    return False, ""
+
+
+def detect_blind_handoffs(state: Any) -> list[dict[str, Any]]:
+    """State ki findings me blind handoffs dhoondho (synthesize/critic/refine ke liye).
+
+    State-level `tool_evidence` (canonical worker records) proof ke taur par accept
+    hota hai — sirf tab blind jab wahan bhi worker ka koi ok record na ho.
+    """
+    if not isinstance(state, dict):
+        return []
+    state_ok_workers = {str(r.get("worker") or "").lower() for r in evidence_records(state) if r.get("ok")}
+    # canonical records me worker tag na ho to naam se guess mat karo — blind hi rahega
+    out: list[dict[str, Any]] = []
+    for finding in state.get("findings") or []:
+        if not isinstance(finding, dict):
+            continue
+        blind, reason = finding_is_blind(finding)
+        if blind and "tool_calls khaali" in reason:
+            worker = str(finding.get("worker") or "").lower()
+            names = {str(r.get("name") or "") for r in evidence_records(state) if r.get("ok")}
+            if worker in state_ok_workers or names:
+                # kahin to asli tool chala — worker-attribution pakki nahi, isliye
+                # blind hi maano (fail-closed), par reason me bata do.
+                reason += " (state me kuch tool records hain, par is finding se jude nahi)"
+        if blind:
+            out.append(
+                {"worker": finding.get("worker"), "summary": str(finding.get("summary") or "")[:160], "reason": reason}
+            )
+    return out
+
+
+def session_evidence_summary(state: Any) -> dict[str, Any]:
+    """Ek run ka evidence balance-sheet (reasoning summary / memory / UI ke liye)."""
+    records = evidence_records(state) if isinstance(state, dict) else []
+    ok = [r for r in records if r.get("ok")]
+    blind = detect_blind_handoffs(state)
+    verdict = verify_execution(state, "") if isinstance(state, dict) else None
+    if verdict is not None and verdict.tool_required:
+        status = verdict.failure_reason or "verified"
+    else:
+        status = "verified" if ok else ("failed" if records else "no-evidence-needed")
+    return {
+        "tool_calls": len(records),
+        "verified": len(supporting_records(ok)),
+        "failed": len(records) - len(ok),
+        "blind_findings": [str(b.get("worker")) for b in blind],
+        "status": status,
+    }
 
 
 # ---------------------------------------------------------------------------
