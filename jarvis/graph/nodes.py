@@ -589,6 +589,14 @@ _ACTION_KEYS = (
     "minimize",
     "maximize",
     "focus",
+    "click",
+    "dabao",
+    "display",
+    "screen par",
+    "screen pe",
+    "kya dikh",
+    "dikha raha",
+    "describe",
 )
 _OPEN_VERBS = r"(?:open|kholo|khol\s*do|khol|launch|chalu\s*kar\w*|chala\s*do|start\s*kar\w*)"
 _TYPE_VERBS = r"(?:likh\w*|type\s*kar\w*|type|likh\s*de|likh\s*do)"
@@ -644,6 +652,26 @@ def detect_desktop_action(request: str) -> dict[str, Any]:
     # screenshot
     if "screenshot" in low or "screen shot" in low:
         actions.append({"kind": "screenshot"})
+
+    # screen describe: "screen par kya hai" / "kya dikh raha hai" / "screen describe karo"
+    if ("screen" in low or "display" in low) and any(
+        k in low for k in ("kya", "dikha", "dikh", "describe", "bata", "padh", "likha")
+    ):
+        q = t.strip()
+        actions.append({"kind": "describe_screen", "question": q[:200]})
+
+    # mouse click: "500 300 par click karo" / "click at 500,300" / "(500,300) dabao"
+    m_click = re.search(r"(\d{1,5})\s*[,\s]\s*(\d{1,5})", low)
+    if m_click and any(k in low for k in ("click", "dabao", "daba")):
+        actions.append(
+            {
+                "kind": "click",
+                "x": int(m_click.group(1)),
+                "y": int(m_click.group(2)),
+                "button": ("right" if "right" in low else "left"),
+                "clicks": 2 if "double" in low else 1,
+            }
+        )
 
     # hotkey: "ctrl+s dabao", "alt+f4"
     m_hk = re.search(r"\b((?:ctrl|alt|shift|win|cmd|command|super)(?:\s*\+\s*[a-z0-9]+)+)\b", low)
@@ -729,6 +757,18 @@ async def _execute_desktop_action(action: dict[str, Any], tools: list) -> list[d
             await call("press_hotkey", {"keys": a.get("keys", "")})
         elif kind == "screenshot":
             await call("take_screenshot", {})
+        elif kind == "describe_screen":
+            await call("describe_screen", {"question": a.get("question", "")})
+        elif kind == "click":
+            await call(
+                "click_at",
+                {
+                    "x": a.get("x", 0),
+                    "y": a.get("y", 0),
+                    "button": a.get("button", "left"),
+                    "clicks": a.get("clicks", 1),
+                },
+            )
         elif kind == "volume":
             await call("control_volume", {"action": a.get("action", "up")})
         elif kind == "close_app":

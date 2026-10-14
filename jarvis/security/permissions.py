@@ -13,6 +13,7 @@ Blacklist-only approach kamzor hoti hai. Yahan **permission levels** hain:
 Har surface (CLI owner / Telegram owner / Telegram guest) ka apna allowed-max-level hai.
 Isliye Telegram pe koi random banda desktop control nahi kar sakta, chahe wo kuch bhi bheje.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -22,16 +23,31 @@ LEVELS = ("READ", "WRITE", "EXECUTE", "SYSTEM", "DANGEROUS")
 # tool group → level
 TOOL_LEVELS: dict[str, str] = {
     # read-only
-    "web": "READ", "research": "READ", "memory_read": "READ", "system_info": "READ",
-    "db_read": "READ", "api_read": "READ",
+    "web": "READ",
+    "research": "READ",
+    "memory_read": "READ",
+    "system_info": "READ",
+    "db_read": "READ",
+    "api_read": "READ",
     # write (apne workspace me)
-    "files": "WRITE", "notes": "WRITE", "memory": "WRITE", "skills": "READ",
-    "desktop": "SYSTEM", "apps": "SYSTEM", "settings": "WRITE", "automation": "WRITE",
+    "files": "WRITE",
+    "notes": "WRITE",
+    "memory": "WRITE",
+    "skills": "READ",
+    "desktop": "SYSTEM",
+    "apps": "SYSTEM",
+    "settings": "WRITE",
+    "automation": "WRITE",
     # execute
-    "code": "EXECUTE", "shell": "EXECUTE", "runtime": "EXECUTE", "process": "EXECUTE",
-    "browser": "EXECUTE", "voice": "READ",
+    "code": "EXECUTE",
+    "shell": "EXECUTE",
+    "runtime": "EXECUTE",
+    "process": "EXECUTE",
+    "browser": "EXECUTE",
+    "voice": "READ",
     # destructive / system-wide
-    "system": "SYSTEM", "dangerous": "DANGEROUS",
+    "system": "SYSTEM",
+    "dangerous": "DANGEROUS",
 }
 
 SURFACES: dict[str, dict[str, str]] = {
@@ -69,14 +85,59 @@ def tool_level(tool_name: str) -> str:
         return "WRITE"  # Telegram send tools — guest (READ-only) par blocked
     if any(k in name for k in ("delete", "remove", "kill", "uninstall", "wipe", "clear_cache")):
         return "DANGEROUS"
-    if any(k in name for k in ("run_shell", "shell", "exec", "python_repl", "run_python", "process",
-                               "browser", "playwright", "run_code")):
+    if any(
+        k in name
+        for k in (
+            "run_shell",
+            "shell",
+            "exec",
+            "python_repl",
+            "run_python",
+            "process",
+            "browser",
+            "playwright",
+            "run_code",
+        )
+    ):
         return "EXECUTE"
-    if any(k in name for k in ("open_app", "close_app", "launch", "window", "screenshot", "type_text",
-                               "press_hotkey", "volume", "desktop", "system_info", "refresh_system")):
+    if any(
+        k in name
+        for k in (
+            "open_app",
+            "close_app",
+            "launch",
+            "window",
+            "screenshot",
+            "type_text",
+            "press_hotkey",
+            "click",
+            "mouse",
+            "scroll",
+            "screen",
+            "volume",
+            "desktop",
+            "system_info",
+            "refresh_system",
+        )
+    ):
         return "SYSTEM"
-    if any(k in name for k in ("write", "save", "note", "mkdir", "move", "rename", "set_", "settings",
-                               "automation", "remember", "forget", "cron")):
+    if any(
+        k in name
+        for k in (
+            "write",
+            "save",
+            "note",
+            "mkdir",
+            "move",
+            "rename",
+            "set_",
+            "settings",
+            "automation",
+            "remember",
+            "forget",
+            "cron",
+        )
+    ):
         return "WRITE"
     return "READ"
 
@@ -87,8 +148,9 @@ def check(tool_name: str, surface: str = "cli_owner", explicit_level: str | None
     level = (explicit_level or tool_level(tool_name)).upper()
     if level_index(level) <= level_index(max_level):
         return Decision(True, level, max_level)
-    return Decision(False, level, max_level,
-                    reason=f"'{tool_name}' = {level} level, par '{surface}' ki limit {max_level} hai")
+    return Decision(
+        False, level, max_level, reason=f"'{tool_name}' = {level} level, par '{surface}' ki limit {max_level} hai"
+    )
 
 
 def allowed_surfaces(tool_name: str) -> list[str]:

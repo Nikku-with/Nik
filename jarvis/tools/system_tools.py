@@ -9,6 +9,7 @@ Yahan:
   * volume / hotkey / typing / screenshot — pyautogui optional, graceful degrade
   * `run_shell_command` guardrails ke saath (dangerous pattern block)
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -69,12 +70,20 @@ def _expand_secrets(text: str) -> str:
 
     def _sub(match) -> str:
         key = (match.group(1) or match.group(2) or "").strip()
-        bare = key[len("SECRET_"):] if key.upper().startswith("SECRET_") else (
-            key[len("JARVIS_SECRET_"):] if key.upper().startswith("JARVIS_SECRET_") else key)
+        bare = (
+            key[len("SECRET_") :]
+            if key.upper().startswith("SECRET_")
+            else (key[len("JARVIS_SECRET_") :] if key.upper().startswith("JARVIS_SECRET_") else key)
+        )
         candidates = [
-            key, key.upper(),
-            f"JARVIS_{key}", f"JARVIS_{key.upper()}",
-            f"JARVIS_SECRET_{bare}", f"JARVIS_SECRET_{bare.upper()}", bare, bare.upper(),
+            key,
+            key.upper(),
+            f"JARVIS_{key}",
+            f"JARVIS_{key.upper()}",
+            f"JARVIS_SECRET_{bare}",
+            f"JARVIS_SECRET_{bare.upper()}",
+            bare,
+            bare.upper(),
         ]
         for cand in candidates:
             if cand and cand in _os.environ:
@@ -110,17 +119,25 @@ def _resolve_app(app_title: str) -> str | None:
 async def _launch(target: str) -> tuple[bool, str]:
     try:
         if IS_MAC:
-            proc = await asyncio.create_subprocess_exec("open", "-a", target, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+            proc = await asyncio.create_subprocess_exec(
+                "open", "-a", target, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE
+            )
         elif IS_WINDOWS:
             if target.endswith(":"):  # ms-settings:
                 await asyncio.create_subprocess_exec("cmd", "/c", "start", "", target)
                 return True, target
-            proc = await asyncio.create_subprocess_exec("cmd", "/c", "start", "", target, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+            proc = await asyncio.create_subprocess_exec(
+                "cmd", "/c", "start", "", target, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE
+            )
         else:
             if shutil.which("gtk-launch"):
-                proc = await asyncio.create_subprocess_exec(target, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+                proc = await asyncio.create_subprocess_exec(
+                    target, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE
+                )
             else:
-                proc = await asyncio.create_subprocess_exec(target, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+                proc = await asyncio.create_subprocess_exec(
+                    target, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE
+                )
         try:
             _, err = await asyncio.wait_for(proc.communicate(), timeout=8)
         except asyncio.TimeoutError:
@@ -171,6 +188,7 @@ async def focus_window(title_keyword: str) -> bool:
     try:
         if IS_WINDOWS:
             import pygetwindow as gw  # type: ignore
+
             for w in gw.getAllWindows():
                 if kw in (w.title or "").lower():
                     if getattr(w, "isMinimized", False):
@@ -191,7 +209,6 @@ async def focus_window(title_keyword: str) -> bool:
     return False
 
 
-
 # ---------------------------------------------------------------------------
 # NATIVE INPUT LAYER — bina kisi pip install ke (pyautogui optional hai)
 # ---------------------------------------------------------------------------
@@ -199,10 +216,12 @@ async def focus_window(title_keyword: str) -> bool:
 # dependencies me hi nahi hai. Isliye Windows par typing "❌ pyautogui install karo"
 # return karta tha — aur LLM phir bhi "likh diya" bol deta tha. Ab har OS ka
 # apna native rasta hai (PowerShell SendKeys / osascript / xdotool).
-_PS_SENDBAR = ('Add-Type -AssemblyName System.Windows.Forms; '
-               'Add-Type -AssemblyName Microsoft.VisualBasic; '
-               'Start-Sleep -Milliseconds 350; '
-               '[System.Windows.Forms.SendKeys]::SendWait("{combo}")')
+_PS_SENDBAR = (
+    "Add-Type -AssemblyName System.Windows.Forms; "
+    "Add-Type -AssemblyName Microsoft.VisualBasic; "
+    "Start-Sleep -Milliseconds 350; "
+    '[System.Windows.Forms.SendKeys]::SendWait("{combo}")'
+)
 
 
 def _escape_sendkeys(text: str) -> str:
@@ -223,15 +242,26 @@ def _escape_sendkeys(text: str) -> str:
 def _key_name(part: str) -> str:
     """'ctrl' → '^', 'alt' → '%', 'shift' → '+', 'win' → '^%'? (SendKeys style)."""
     p = part.strip().lower()
-    return {"ctrl": "^", "control": "^", "alt": "%", "shift": "+", "win": "^",
-            "cmd": "^", "command": "^", "meta": "^", "super": "^"}.get(p, p)
+    return {
+        "ctrl": "^",
+        "control": "^",
+        "alt": "%",
+        "shift": "+",
+        "win": "^",
+        "cmd": "^",
+        "command": "^",
+        "meta": "^",
+        "super": "^",
+    }.get(p, p)
 
 
 async def _run_quiet(*args: str, stdin_data: bytes | None = None) -> tuple[int, str]:
     """Chhota subprocess runner (stdout/stderr capture, crash-safe)."""
     try:
         proc = await asyncio.create_subprocess_exec(
-            *args, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+            *args,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
         )
         out, _ = await proc.communicate(input=stdin_data)
@@ -270,7 +300,7 @@ async def _windows_paste_text(text: str) -> tuple[bool, str]:
 async def _native_type(text: str, press_enter: bool) -> tuple[bool, str]:
     """Har OS ka native typing rasta. Returns (ok, detail)."""
     if IS_WINDOWS:
-        if any(ord(ch) > 126 for ch in text):          # Hindi/emoji → clipboard route
+        if any(ord(ch) > 126 for ch in text):  # Hindi/emoji → clipboard route
             ok, detail = await _windows_paste_text(text)
             if ok and press_enter:
                 await _windows_sendkeys("{ENTER}")
@@ -309,12 +339,21 @@ async def _native_hotkey(combo: list[str]) -> tuple[bool, str]:
     """Cross-platform hotkey, bina install."""
     if IS_WINDOWS:
         parts = [_key_name(p) for p in combo]
-        return await _windows_sendkeys("".join(parts[:-1]) + "{" + parts[-1].upper() + "}"
-                                       if len(parts[-1]) > 1 else "".join(parts))
+        return await _windows_sendkeys(
+            "".join(parts[:-1]) + "{" + parts[-1].upper() + "}" if len(parts[-1]) > 1 else "".join(parts)
+        )
     if IS_MAC:
-        mods = {"ctrl": "control down", "control": "control down", "alt": "option down",
-                "option": "option down", "shift": "shift down", "cmd": "command down",
-                "command": "command down", "win": "command down", "super": "command down"}
+        mods = {
+            "ctrl": "control down",
+            "control": "control down",
+            "alt": "option down",
+            "option": "option down",
+            "shift": "shift down",
+            "cmd": "command down",
+            "command": "command down",
+            "win": "command down",
+            "super": "command down",
+        }
         key = combo[-1].lower()
         mods_used = [mods[p.lower()] for p in combo[:-1] if p.lower() in mods]
         using = (" using {" + ", ".join(mods_used) + "}") if mods_used else ""
@@ -330,6 +369,44 @@ async def _native_hotkey(combo: list[str]) -> tuple[bool, str]:
 # ---------------------------------------------------------------------------
 # TOOLS
 # ---------------------------------------------------------------------------
+async def _native_click(x: int, y: int, button: str, clicks: int) -> tuple[bool, str]:
+    """Bina pyautogui ke mouse click (OS native raaste)."""
+    if IS_WINDOWS:
+        btn_down = {"left": 0x0002, "right": 0x0008, "middle": 0x0020}.get(button, 0x0002)
+        btn_up = btn_down * 2
+        ps = (
+            f'Add-Type -MemberDefinition \'[DllImport("user32.dll")] '
+            "public static extern void mouse_event(int f,int x,int y,int d,int e); "
+            '[DllImport("user32.dll")] public static extern bool SetCursorPos(int x,int y);\' '
+            f"-Name M -Namespace W; [W.M]::SetCursorPos({x},{y}); "
+            + "".join(
+                f"[W.M]::mouse_event({btn_down},0,0,0,0); [W.M]::mouse_event({btn_up},0,0,0,0); "
+                for _ in range(max(1, clicks))
+            )
+        )
+        code, out = await _run_quiet("powershell", "-NoProfile", "-NonInteractive", "-Command", ps)
+        return (True, "windows native click") if code == 0 else (False, out[:160] or "powershell click fail")
+    if IS_MAC:
+        if shutil.which("cliclick"):
+            args = ["cliclick"]
+            for _ in range(max(1, clicks)):
+                args += [f"m:{x},{y}", "c:." if button == "left" else f"c:{button}"]
+            code, out = await _run_quiet(*args)
+            return (True, "cliclick") if code == 0 else (False, out[:160] or "cliclick fail")
+        return (False, "macOS par click ke liye `brew install cliclick` ya `pip install pyautogui` chahiye")
+    # linux
+    if shutil.which("xdotool"):
+        args = ["xdotool", "mousemove", str(x), str(y)]
+        btn_num = {"left": "1", "right": "3", "middle": "2"}.get(button, "1")
+        for _ in range(max(1, clicks)):
+            args += ["click", btn_num]
+        code, out = await _run_quiet(*args)
+        return (True, "xdotool") if code == 0 else (False, out[:160] or "xdotool click fail")
+    if shutil.which("wtype"):
+        return (False, "wtype se click nahi hota — `pip install pyautogui` karo ya xdotool (X11) lagao")
+    return (False, "Linux par click ke liye `xdotool` (X11) ya `pip install pyautogui` chahiye")
+
+
 @tool
 async def open_app(app_title: str) -> str:
     """Open a desktop application by name (notepad, chrome, vscode, calculator, vlc, terminal...).
@@ -381,7 +458,9 @@ async def close_app(window_title: str) -> str:
             proc = await asyncio.create_subprocess_exec("osascript", "-e", f'tell application "{window_title}" to quit')
             await proc.communicate()
             return f"✅ {window_title} quit signal bhej diya."
-        proc = await asyncio.create_subprocess_exec("pkill", "-f", window_title, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+        proc = await asyncio.create_subprocess_exec(
+            "pkill", "-f", window_title, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
+        )
         await proc.communicate()
         ok = proc.returncode == 0
         return f"{'✅' if ok else '⚠️'} {window_title} {'band ho gaya' if ok else 'match nahi hua'}."
@@ -395,13 +474,19 @@ async def list_windows() -> str:
     try:
         if IS_WINDOWS:
             import pygetwindow as gw  # type: ignore
+
             titles = [w.title for w in gw.getAllWindows() if w.title.strip()]
             return "Open windows:\n" + "\n".join(f"- {t}" for t in titles[:40])
         if IS_LINUX and shutil.which("wmctrl"):
             proc = await asyncio.create_subprocess_exec("wmctrl", "-l", stdout=asyncio.subprocess.PIPE)
             out, _ = await proc.communicate()
             return out.decode(errors="ignore")[:3000] or "(koi window nahi)"
-        proc = await asyncio.create_subprocess_exec("osascript", "-e", 'tell application "System Events" to get name of every process whose background only is false', stdout=asyncio.subprocess.PIPE)
+        proc = await asyncio.create_subprocess_exec(
+            "osascript",
+            "-e",
+            'tell application "System Events" to get name of every process whose background only is false',
+            stdout=asyncio.subprocess.PIPE,
+        )
         out, _ = await proc.communicate()
         return out.decode(errors="ignore")[:2000]
     except Exception as exc:
@@ -434,8 +519,10 @@ async def type_text(text: str, press_enter: bool = False) -> str:
     ok, detail = await _native_type(text, press_enter)
     if ok:
         return f"⌨️ {len(text)} characters type kiye ({detail})."
-    return (f"❌ typing fail: {detail}. Windows/macOS par kuch install nahi chahiye; "
-            f"Linux par `xdotool`/`wtype` chahiye — ya `pip install pyautogui` karo.")
+    return (
+        f"❌ typing fail: {detail}. Windows/macOS par kuch install nahi chahiye; "
+        f"Linux par `xdotool`/`wtype` chahiye — ya `pip install pyautogui` karo."
+    )
 
 
 @tool
@@ -454,8 +541,7 @@ async def press_hotkey(keys: str) -> str:
     except Exception:
         pass
     ok, detail = await _native_hotkey(combo)
-    return (f"⌨️ {'+'.join(combo)} press kiya ({detail})." if ok
-            else f"❌ hotkey fail: {detail}")
+    return f"⌨️ {'+'.join(combo)} press kiya ({detail})." if ok else f"❌ hotkey fail: {detail}"
 
 
 @tool
@@ -468,23 +554,28 @@ async def control_volume(action: str = "up", steps: int = 5) -> str:
             if key is None:
                 return "❌ action 'up'/'down'/'mute' me se ho."
             import ctypes
+
             for _ in range(max(1, steps if action != "mute" else 1)):
                 ctypes.windll.user32.keybd_event(key, 0, 0, 0)
                 ctypes.windll.user32.keybd_event(key, 0, 2, 0)
             return f"🔊 Volume {action}."
         if IS_MAC:
-            cmd = {"up": "set volume output volume ((output volume of (get volume settings)) + 6)",
-                   "down": "set volume output volume ((output volume of (get volume settings)) - 6)",
-                   "mute": "set volume output muted true"}.get(action)
+            cmd = {
+                "up": "set volume output volume ((output volume of (get volume settings)) + 6)",
+                "down": "set volume output volume ((output volume of (get volume settings)) - 6)",
+                "mute": "set volume output muted true",
+            }.get(action)
             if not cmd:
                 return "❌ invalid action."
             proc = await asyncio.create_subprocess_exec("osascript", "-e", cmd)
             await proc.communicate()
             return f"🔊 Volume {action}."
         # linux
-        cmd = {"up": ["amixer", "-q", "sset", "Master", f"{steps}%+"],
-               "down": ["amixer", "-q", "sset", "Master", f"{steps}%-"],
-               "mute": ["amixer", "-q", "sset", "Master", "toggle"]}.get(action)
+        cmd = {
+            "up": ["amixer", "-q", "sset", "Master", f"{steps}%+"],
+            "down": ["amixer", "-q", "sset", "Master", f"{steps}%-"],
+            "mute": ["amixer", "-q", "sset", "Master", "toggle"],
+        }.get(action)
         if not cmd or not shutil.which("amixer"):
             return "⚠️ Linux par amixer nahi mila."
         proc = await asyncio.create_subprocess_exec(*cmd)
@@ -494,35 +585,29 @@ async def control_volume(action: str = "up", steps: int = 5) -> str:
         return f"❌ volume error: {exc}"
 
 
-@tool
-async def take_screenshot(name: str = "screen") -> str:
-    """Take a screenshot and save it in the workspace screenshots folder.
-
-    Zero-install: Windows (PowerShell + System.Drawing), macOS (screencapture),
-    Linux (gnome-screenshot / scrot / import). pyautogui ho to wahi pehle.
-    """
-    SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
-    path = SCREENSHOTS_DIR / f"{name.strip().replace(' ', '_')[:40]}.png"
-
+async def _capture_screenshot(path: Path) -> tuple[bool, str]:
+    """Screen capture karke `path` par save karo. Returns (ok, detail)."""
     # 1) pyautogui (agar hai)
     try:
         import pyautogui  # type: ignore
 
         pyautogui.screenshot().save(path)
-        if path.exists():
-            return f"📸 Screenshot saved: {path}"
+        if path.exists() and path.stat().st_size > 0:
+            return True, f"pyautogui ({path.stat().st_size // 1024} KB)"
     except Exception:
         pass
 
     # 2) native raaste
     try:
         if IS_WINDOWS:
-            ps = ("Add-Type -AssemblyName System.Windows.Forms,System.Drawing; "
-                  "$b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds; "
-                  "$img = New-Object System.Drawing.Bitmap $b.Width, $b.Height; "
-                  "$g = [System.Drawing.Graphics]::FromImage($img); "
-                  "$g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size); "
-                  f"$img.Save('{str(path)}', [System.Drawing.Imaging.ImageFormat]::Png)")
+            ps = (
+                "Add-Type -AssemblyName System.Windows.Forms,System.Drawing; "
+                "$b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds; "
+                "$img = New-Object System.Drawing.Bitmap $b.Width, $b.Height; "
+                "$g = [System.Drawing.Graphics]::FromImage($img); "
+                "$g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size); "
+                f"$img.Save('{str(path)}', [System.Drawing.Imaging.ImageFormat]::Png)"
+            )
             code, out = await _run_quiet("powershell", "-NoProfile", "-NonInteractive", "-Command", ps)
         elif IS_MAC:
             code, out = await _run_quiet("screencapture", "-x", str(path))
@@ -533,13 +618,121 @@ async def take_screenshot(name: str = "screen") -> str:
         elif shutil.which("import"):
             code, out = await _run_quiet("import", "-window", "root", str(path))
         else:
-            return ("❌ Screenshot nahi ho paya — Linux par `gnome-screenshot`/`scrot`/ImageMagick "
-                    "chahiye, ya `pip install pyautogui`. (Headless server par screen hi nahi hoti.)")
+            return (
+                False,
+                "Linux par `gnome-screenshot`/`scrot`/ImageMagick chahiye, "
+                "ya `pip install pyautogui`. (Headless server par screen hi nahi hoti.)",
+            )
         if path.exists() and path.stat().st_size > 0:
-            return f"📸 Screenshot saved: {path} ({path.stat().st_size // 1024} KB)"
-        return f"❌ Screenshot fail: {out[:160] or 'output file nahi bani'}"
+            return True, f"native ({path.stat().st_size // 1024} KB)"
+        return False, out[:160] or "output file nahi bani"
     except Exception as exc:
-        return f"❌ screenshot error: {exc}"
+        return False, f"screenshot error: {exc}"
+
+
+@tool
+async def take_screenshot(name: str = "screen") -> str:
+    """Take a screenshot and save it in the workspace screenshots folder.
+
+    Zero-install: Windows (PowerShell + System.Drawing), macOS (screencapture),
+    Linux (gnome-screenshot / scrot / import). pyautogui ho to wahi pehle.
+    """
+    SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
+    path = SCREENSHOTS_DIR / f"{name.strip().replace(' ', '_')[:40] or 'screen'}.png"
+    ok, detail = await _capture_screenshot(path)
+    if ok:
+        return f"📸 Screenshot saved: {path} ({detail})"
+    return f"❌ Screenshot nahi ho paya — {detail}"
+
+
+@tool
+async def click_at(x: int, y: int, button: str = "left", clicks: int = 1) -> str:
+    """Mouse se screen par click karo (absolute pixel coordinates).
+
+    Args:
+        x, y: screen coordinates (0,0 = top-left). `describe_screen` se pehle dekh lo kahan hai.
+        button: left | right | middle.
+        clicks: 1 = single, 2 = double-click.
+    """
+    try:
+        x, y = int(x), int(y)
+    except (TypeError, ValueError):
+        return "❌ x, y numbers hone chahiye (jaise 500, 300)."
+    if x < 0 or y < 0 or x > 10000 or y > 10000:
+        return "❌ coordinates 0..10000 ke andar do."
+    button = (button or "left").lower()
+    if button not in ("left", "right", "middle"):
+        return "❌ button left/right/middle me se ho."
+    clicks = max(1, min(int(clicks or 1), 3))
+    await asyncio.sleep(0.3)
+
+    try:
+        import pyautogui  # type: ignore
+
+        pyautogui.click(x=x, y=y, button=button, clicks=clicks)
+        return f"🖱️ Click ({x},{y}) {button} x{clicks} (pyautogui)."
+    except ImportError:
+        pass
+    except Exception:
+        pass  # display/headless issue → native try karo
+
+    ok, detail = await _native_click(x, y, button, clicks)
+    if ok:
+        return f"🖱️ Click ({x},{y}) {button} x{clicks} ({detail})."
+    return f"❌ click fail: {detail}"
+
+
+@tool
+async def describe_screen(question: str = "") -> str:
+    """Screen ka screenshot lo aur vision model se dekho kya dikh raha hai.
+
+    Args:
+        question: specific sawaal, jaise "error popup me kya likha hai?" (khaali = poori screen batao).
+
+    Offline/demo mode me model generic jawab dega (screenshot path hamesha milta hai);
+    vision-capable provider (Gemini/OpenRouter) par asli screen reading milti hai.
+    """
+    import base64
+
+    SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
+    path = SCREENSHOTS_DIR / "screen_describe.png"
+    ok, detail = await _capture_screenshot(path)
+    if not ok:
+        return f"❌ Screen dekh nahi paya — screenshot fail: {detail}"
+    try:
+        raw = path.read_bytes()
+        try:
+            import io as _io
+
+            from PIL import Image  # type: ignore
+
+            img = Image.open(_io.BytesIO(raw)).convert("RGB")
+            img.thumbnail((1280, 1280))
+            buf = _io.BytesIO()
+            img.save(buf, format="JPEG", quality=70)
+            raw = buf.getvalue()
+        except Exception:
+            pass  # PIL nahi → original PNG bhejo
+        b64 = base64.b64encode(raw).decode("ascii")
+        from langchain_core.messages import HumanMessage
+
+        from ..llm import get_chat_model
+
+        q = (question or "").strip() or "Is screen par kya dikh raha hai? Mukhya cheezein short me batao."
+        msg = HumanMessage(
+            content=[
+                {"type": "text", "text": f"Screen dekh kar Hinglish me jawab do: {q}"},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+            ]
+        )
+        model = get_chat_model("vision")
+        resp = await model.ainvoke([msg])
+        answer = str(getattr(resp, "content", resp) or "").strip()
+        if not answer:
+            return f"⚠️ Vision model ne khaali jawab diya. 📸 Screenshot: {path}"
+        return f"👁️ {answer}\n📸 Screenshot: {path}"
+    except Exception as exc:
+        return f"⚠️ Vision model fail ({type(exc).__name__}: {str(exc)[:150]}). 📸 Screenshot: {path}"
 
 
 @tool
@@ -585,8 +778,10 @@ async def run_shell_command(
             from ..runtime.process_manager import read_logs
 
             tail = read_logs(info.pid, tail_lines=10)
-            return (f"🚀 Background me chalu: **{info.pid}** (os pid {info.popen.pid if info.popen else '?'})\n"
-                    f"📜 log: {info.log_path}\n---\n{_redact(tail)[-1200:]}")
+            return (
+                f"🚀 Background me chalu: **{info.pid}** (os pid {info.popen.pid if info.popen else '?'})\n"
+                f"📜 log: {info.log_path}\n---\n{_redact(tail)[-1200:]}"
+            )
         except Exception as exc:
             return f"❌ background start fail: {exc}"
 
@@ -602,8 +797,10 @@ async def run_shell_command(
             out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except asyncio.TimeoutError:
             proc.kill()
-            return (f"⏱️ Command {timeout}s me complete nahi hua — kill kar diya.\n"
-                    f"Tip: agar ye long-running hai (server/watcher) to `background=true` use karo.")
+            return (
+                f"⏱️ Command {timeout}s me complete nahi hua — kill kar diya.\n"
+                f"Tip: agar ye long-running hai (server/watcher) to `background=true` use karo."
+            )
         stdout = (out or b"").decode(errors="ignore")
         stderr = (err or b"").decode(errors="ignore")
         rc = proc.returncode
@@ -619,10 +816,12 @@ async def run_shell_command(
 async def system_info() -> str:
     """Machine ki info: OS, python, CPU cores, disk, workspace path."""
     import shutil as _sh
+
     try:
         import psutil  # type: ignore
+
         mem = psutil.virtual_memory()
-        mem_line = f"RAM: {mem.used/1e9:.1f}/{mem.total/1e9:.1f} GB ({mem.percent}%)"
+        mem_line = f"RAM: {mem.used / 1e9:.1f}/{mem.total / 1e9:.1f} GB ({mem.percent}%)"
         cpu_line = f"CPU: {psutil.cpu_count(logical=True)} cores @ {psutil.cpu_percent(interval=0.2)}%"
     except Exception:
         mem_line, cpu_line = "RAM: n/a", f"CPU: {os.cpu_count()} cores"
@@ -632,7 +831,7 @@ async def system_info() -> str:
         f"🖥️ {platform.system()} {platform.release()} ({platform.machine()})\n"
         f"🐍 Python {sys.version.split()[0]} @ {sys.executable}\n"
         f"{cpu_line}\n{mem_line}\n"
-        f"💾 Disk ({WORKSPACE_DIR}): {disk.used/1e9:.1f}/{disk.total/1e9:.1f} GB free={disk.free/1e9:.1f} GB\n"
+        f"💾 Disk ({WORKSPACE_DIR}): {disk.used / 1e9:.1f}/{disk.total / 1e9:.1f} GB free={disk.free / 1e9:.1f} GB\n"
         f"📁 Workspace: {WORKSPACE_DIR}"
     )
 
@@ -648,8 +847,10 @@ SYSTEM_TOOLS = [
     list_windows,
     type_text,
     press_hotkey,
+    click_at,
     control_volume,
     take_screenshot,
+    describe_screen,
     run_shell_command,
     system_info,
     *PROCESS_TOOLS,
