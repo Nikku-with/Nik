@@ -14,17 +14,15 @@ from __future__ import annotations
 
 import asyncio
 import os
-import time
 import platform
 import shutil
-import subprocess
 import sys
+import time
 from pathlib import Path
 
 from langchain_core.tools import tool
 
 from ..config import (
-    LOGS_DIR,
     SAFETY_ALLOW_SHELL,
     SCREENSHOTS_DIR,
     WORKSPACE_DIR,
@@ -98,7 +96,6 @@ def _expand_secrets(text: str) -> str:
 def _redact(text: str) -> str:
     """Output me secrets wapas redact karo (leak na ho)."""
     import os as _os
-    import re as _re
 
     for key, value in _os.environ.items():
         if key.startswith("JARVIS_SECRET_") and value and len(value) > 3:
@@ -427,8 +424,10 @@ async def open_app(app_title: str) -> str:
             hint = get_state().recent_apps_hint()
         except Exception:
             pass
-        msg = (f"❌ '{app_title}' ko main launch nahi kar paya — app registry ya PATH me nahi hai. "
-               "APP_REGISTRY me add kar sakte hain.")
+        msg = (
+            f"❌ '{app_title}' ko main launch nahi kar paya — app registry ya PATH me nahi hai. "
+            "APP_REGISTRY me add kar sakte hain."
+        )
         return msg + (f"\n💡 {hint}" if hint else "")
     ok, detail = await _launch(target)
     if not ok:
@@ -526,7 +525,7 @@ async def type_text(text: str, press_enter: bool = False) -> str:
         return f"⌨️ {len(text)} characters type kiye (pyautogui)."
     except ImportError:
         pass
-    except Exception as exc:  # pyautogui present par display/headless issue
+    except Exception:  # pyautogui present par display/headless issue
         pass
 
     # 2) native fallback — koi install nahi chahiye
@@ -850,6 +849,35 @@ async def system_info() -> str:
     )
 
 
+@tool
+def get_capability_matrix(surface: str | None = None) -> str:
+    """Inspect what capabilities, permission level, and tools each surface supports.
+
+    Args:
+        surface: Optional specific surface (e.g. 'cli_owner', 'telegram_owner',
+                 'telegram_guest', 'voice_owner', 'api', 'automation'). If omitted,
+                 returns the full capability x surface matrix.
+    """
+    from ..runtime.matrix import format_matrix_table, get_surface_capability
+
+    if surface:
+        cap = get_surface_capability(surface)
+        return (
+            f"Surface: {cap.label} ({cap.surface})\n"
+            f"  Max Permission: {cap.max_permission}\n"
+            f"  Gate Asker: {cap.gate_asker}\n"
+            f"  Memory Access: {cap.memory_access}\n"
+            f"  Progress Stream: {'yes' if cap.progress_stream else 'no'}\n"
+            f"  Interactive Buttons: {'yes' if cap.buttons_interactive else 'no'}\n"
+            f"  Voice/Speech: {'yes' if cap.voice_speech else 'no'}\n"
+            f"  Desktop Control: {'yes' if cap.desktop_control else 'no'}\n"
+            f"  Supervised Browser: {'yes' if cap.supervised_browser else 'no'}\n"
+            f"  Persistent Session: {'yes' if cap.persistent_session else 'no'}\n"
+            f"  Summary: {cap.description}"
+        )
+    return format_matrix_table()
+
+
 try:
     from ..runtime.process_manager import PROCESS_TOOLS
 except Exception:  # pragma: no cover
@@ -867,5 +895,6 @@ SYSTEM_TOOLS = [
     describe_screen,
     run_shell_command,
     system_info,
+    get_capability_matrix,
     *PROCESS_TOOLS,
 ]

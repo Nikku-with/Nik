@@ -12,6 +12,7 @@ Security (yahan laxness sabse mehngi padti hai):
   * owner = poore tools, guest = sirf READ-level (desktop/shell/file-write band)
   * har chat ka apna session + apni memory namespace — cross-user leak nahi
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -21,8 +22,6 @@ import time
 from typing import Any
 
 from ..config import settings as S
-from ..security.permissions import check as perm_check
-from ..voice.speech import for_speech
 
 log = logging.getLogger("nikhilai.telegram")
 
@@ -83,9 +82,9 @@ def surface_for(role: str) -> str:
 # ---------------------------------------------------------------------------
 # inline buttons: gate approvals + agent-question taps (module level = testable)
 # ---------------------------------------------------------------------------
-GATE_CB_PREFIX = "gate:"   # gate:<request_id>:yes|no
-TAP_CB_PREFIX = "tgb:"     # tgb:<tap_id>:<index>
-CB_MAX_LEN = 64            # Telegram callback_data limit
+GATE_CB_PREFIX = "gate:"  # gate:<request_id>:yes|no
+TAP_CB_PREFIX = "tgb:"  # tgb:<tap_id>:<index>
+CB_MAX_LEN = 64  # Telegram callback_data limit
 
 
 def parse_callback(data: str) -> tuple[str, dict[str, str]]:
@@ -114,15 +113,19 @@ def make_gate_keyboard(request_id: str):
     no_data = f"{GATE_CB_PREFIX}{request_id}:no"
     if len(yes_data) > CB_MAX_LEN or len(no_data) > CB_MAX_LEN:
         raise ValueError("callback_data 64 chars se lamba ho gaya")
-    return InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Haan, chalao", callback_data=yes_data),
-        InlineKeyboardButton("🚫 Nahi", callback_data=no_data),
-    ]])
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("✅ Haan, chalao", callback_data=yes_data),
+                InlineKeyboardButton("🚫 Nahi", callback_data=no_data),
+            ]
+        ]
+    )
 
 
 def gate_prompt_text(req) -> str:
     """Approval message (HTML) — command preview + wajah + timeout."""
-    cmd = (req.command or req.kind or "?")
+    cmd = req.command or req.kind or "?"
     if len(cmd) > 300:
         cmd = cmd[:300] + "…"
     lines = [
@@ -162,8 +165,11 @@ def handle_gate_callback(data: str, user_id, chat_id) -> str:
     from ..security.gate import get_broker
 
     ok = get_broker().resolve(
-        payload["id"], approved, by=f"telegram:{user_id}",
-        note="Telegram inline button se " + ("approved" if approved else "denied"))
+        payload["id"],
+        approved,
+        by=f"telegram:{user_id}",
+        note="Telegram inline button se " + ("approved" if approved else "denied"),
+    )
     if not ok:
         return "⌛ ye approval expire ho chuka hai ya pehle se decided."
     return reply
@@ -182,8 +188,7 @@ def register_tap_waiter(tap_id: str, buttons: list[dict[str, str]]) -> asyncio.E
         loop = None
     ev = asyncio.Event()
     with _TAP_LOCK:
-        _TAP_WAITERS[tap_id] = {"event": ev, "value": None, "by": None,
-                                "buttons": list(buttons), "loop": loop}
+        _TAP_WAITERS[tap_id] = {"event": ev, "value": None, "by": None, "buttons": list(buttons), "loop": loop}
     return ev
 
 
@@ -244,8 +249,7 @@ def handle_tap_callback(data: str, user_id, chat_id) -> str:
 
 
 # -- send retry (429 / 5xx / timeout) ------------------------------------------
-async def send_with_retry(factory, *, tries: int = 3, base_delay: float = 1.0,
-                          what: str = "telegram send"):
+async def send_with_retry(factory, *, tries: int = 3, base_delay: float = 1.0, what: str = "telegram send"):
     """Transient Telegram failures par retry, phir raise.
 
     `factory`: zero-arg callable jo coroutine wapas de (har try me naya).
@@ -257,9 +261,16 @@ async def send_with_retry(factory, *, tries: int = 3, base_delay: float = 1.0,
             return await factory()
         except Exception as exc:
             transient = type(exc).__name__ in (
-                "RetryAfter", "TimedOut", "NetworkError", "BadGateway",
-                "ServiceUnavailable", "GatewayTimeout", "TimeoutError",
-                "ConnectTimeout", "ReadTimeout", "PoolTimeout",
+                "RetryAfter",
+                "TimedOut",
+                "NetworkError",
+                "BadGateway",
+                "ServiceUnavailable",
+                "GatewayTimeout",
+                "TimeoutError",
+                "ConnectTimeout",
+                "ReadTimeout",
+                "PoolTimeout",
             )
             last = exc
             if not transient or attempt >= tries:
@@ -271,8 +282,7 @@ async def send_with_retry(factory, *, tries: int = 3, base_delay: float = 1.0,
                     delay = float(retry_after) + 1.0
                 except Exception:
                     pass
-            log.warning("%s fail (%s), retry %d/%d after %.1fs",
-                        what, exc, attempt, tries, delay)
+            log.warning("%s fail (%s), retry %d/%d after %.1fs", what, exc, attempt, tries, delay)
             await asyncio.sleep(delay)
     assert last is not None
     raise last
@@ -295,12 +305,12 @@ def format_pending_approvals() -> tuple[str, Any]:
         try:
             from telegram import InlineKeyboardButton
 
-            rows.append([
-                InlineKeyboardButton(f"✅ {short[:20]}",
-                                     callback_data=f"{GATE_CB_PREFIX}{req.id}:yes"),
-                InlineKeyboardButton("🚫 Nahi",
-                                     callback_data=f"{GATE_CB_PREFIX}{req.id}:no"),
-            ])
+            rows.append(
+                [
+                    InlineKeyboardButton(f"✅ {short[:20]}", callback_data=f"{GATE_CB_PREFIX}{req.id}:yes"),
+                    InlineKeyboardButton("🚫 Nahi", callback_data=f"{GATE_CB_PREFIX}{req.id}:no"),
+                ]
+            )
         except Exception:
             pass
     kb = None
@@ -324,6 +334,7 @@ def make_owner_asker(bot, chat_id, loop):
 
     Worker thread se chalta hai (broker sync hai) — send ke liye bot loop use hota hai.
     """
+
     def _ask(req) -> str:
         from ..security.gate import get_broker
 
@@ -336,13 +347,11 @@ def make_owner_asker(bot, chat_id, loop):
 
         async def _send():
             if kb is not None:
-                return await bot.send_message(chat_id, text, parse_mode="HTML",
-                                              reply_markup=kb)
+                return await bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=kb)
             return await bot.send_message(chat_id, text, parse_mode="HTML")
 
         try:
-            fut = asyncio.run_coroutine_threadsafe(
-                send_with_retry(_send, what="gate approval"), loop)
+            fut = asyncio.run_coroutine_threadsafe(send_with_retry(_send, what="gate approval"), loop)
             fut.result(timeout=30)
         except Exception as exc:
             log.warning("gate approval bheja nahi gaya: %s", exc)
@@ -360,8 +369,9 @@ def make_owner_asker(bot, chat_id, loop):
 # ---------------------------------------------------------------------------
 # agent bridge (ek hi runner: LangGraph)
 # ---------------------------------------------------------------------------
-async def run_agent(text: str, chat_id: int | str, role: str = "owner", on_progress=None,
-                bot=None, loop=None) -> dict[str, Any]:
+async def run_agent(
+    text: str, chat_id: int | str, role: str = "owner", on_progress=None, bot=None, loop=None
+) -> dict[str, Any]:
     """Telegram message → wahi LangGraph agent → result.
 
     `on_progress`: live thinking/tool feed (LiveProgress.on_event) — isse user ko
@@ -380,12 +390,10 @@ async def run_agent(text: str, chat_id: int | str, role: str = "owner", on_progr
     elif role != "owner":
         asker = _guest_deny_asker
     if asker is None:
-        result = await core_run(text, session_id=session, surface=surface,
-                                on_progress=on_progress)
+        result = await core_run(text, session_id=session, surface=surface, on_progress=on_progress)
     else:
         with gate_context(surface, asker=asker):
-            result = await core_run(text, session_id=session, surface=surface,
-                                    on_progress=on_progress)
+            result = await core_run(text, session_id=session, surface=surface, on_progress=on_progress)
     # AgentResult → dict (bot ke baaki handlers isi shape par chalte hain)
     data = result.as_dict() if hasattr(result, "as_dict") else dict(result)
     data.setdefault("response", data.get("answer", ""))
@@ -407,8 +415,10 @@ def config_ok() -> tuple[bool, str]:
     if not telegram_available():
         return False, "`pip install python-telegram-bot` chahiye"
     if not (S.TELEGRAM_OWNER_ID or S.TELEGRAM_ALLOWED_CHAT_IDS or S.TELEGRAM_ALLOWED_USERS):
-        return True, ("⚠️ koi TELEGRAM_OWNER_ID/ALLOWED_CHAT_IDS set nahi — pehla user owner ban jayega. "
-                      "Sahi tarika: apna numeric id daalo (Telegram pe @userinfobot se milega).")
+        return True, (
+            "⚠️ koi TELEGRAM_OWNER_ID/ALLOWED_CHAT_IDS set nahi — pehla user owner ban jayega. "
+            "Sahi tarika: apna numeric id daalo (Telegram pe @userinfobot se milega)."
+        )
     return True, "ok"
 
 
@@ -419,8 +429,7 @@ def build_application():
     """python-telegram-bot Application banao (commands + free-text handler)."""
     from telegram import Update
     from telegram.constants import ChatAction, ParseMode
-    from telegram.ext import (Application, CommandHandler, ContextTypes,
-                              MessageHandler, filters)
+    from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
     async def _deny(update: Update) -> None:
         await update.effective_message.reply_text(
@@ -431,9 +440,8 @@ def build_application():
     async def _reply_long(msg, text: str) -> None:
         """Telegram ka 4096 char limit — lambe jawab ko todo (429/5xx par retry)."""
         for chunk_start in range(0, len(text), 3800):
-            chunk = text[chunk_start:chunk_start + 3800]
-            await send_with_retry(lambda c=chunk: msg.reply_text(c, parse_mode=ParseMode.MARKDOWN),
-                                  what="reply")
+            chunk = text[chunk_start : chunk_start + 3800]
+            await send_with_retry(lambda c=chunk: msg.reply_text(c, parse_mode=ParseMode.MARKDOWN), what="reply")
 
     async def _guard(update: Update) -> tuple[bool, str]:
         user = update.effective_user
@@ -452,10 +460,21 @@ def build_application():
         extra = "" if role == "owner" else "\n\n🔒 Aap guest ho — sirf read-only tools chalenge."
         await update.message.reply_text(
             f"🙌 Namaste {name}! Main *{S.ASSISTANT_NAME}* hoon.{extra}\n\n{HELP_TEXT}",
-            parse_mode=ParseMode.MARKDOWN, reply_markup=MAIN_KB())
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=MAIN_KB(),
+        )
 
     async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(HELP_TEXT, parse_mode=ParseMode.MARKDOWN)
+
+    async def cmd_matrix(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        ok, role = await _guard(update)
+        if not ok:
+            return
+        from ..runtime.matrix import format_matrix_table
+
+        tbl = format_matrix_table()
+        await update.message.reply_text(f"```\n{tbl}\n```", parse_mode=ParseMode.MARKDOWN)
 
     async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         ok, role = await _guard(update)
@@ -474,7 +493,7 @@ def build_application():
             return
         from ..config import runtime as R
 
-        arg = (ctx.args[0].lower() if ctx.args else "")
+        arg = ctx.args[0].lower() if ctx.args else ""
         if arg not in ("text", "voice", "telegram"):
             await update.message.reply_text("Usage: `/mode text|voice|telegram`", parse_mode=ParseMode.MARKDOWN)
             return
@@ -485,8 +504,8 @@ def build_application():
         if not errors and arg != "telegram":
             extra += f"\n→ {mode_entry_hint(arg)}"
         await update.message.reply_text(
-            f"✅ mode = *{arg}*" + extra
-            + (f"\n⚠️ {errors}" if errors else ""), parse_mode=ParseMode.MARKDOWN)
+            f"✅ mode = *{arg}*" + extra + (f"\n⚠️ {errors}" if errors else ""), parse_mode=ParseMode.MARKDOWN
+        )
 
     async def cmd_model(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         ok, role = await _guard(update)
@@ -503,13 +522,15 @@ def build_application():
             await update.message.reply_text(
                 f"🧠 Active provider: `{h['active']}`\nModel: `{h['roles']['brain']}`\n\n"
                 "Badalne ke liye: `/model <naam>` ya `/provider openrouter`",
-                parse_mode=ParseMode.MARKDOWN)
+                parse_mode=ParseMode.MARKDOWN,
+            )
             return
         applied, errors = R.set_many(model=" ".join(ctx.args))
         reset_cache()
         await update.message.reply_text(
             ("✅ model set: `" + " ".join(ctx.args) + "`") if not errors else f"⚠️ {errors}",
-            parse_mode=ParseMode.MARKDOWN)
+            parse_mode=ParseMode.MARKDOWN,
+        )
 
     async def cmd_provider(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         ok, role = await _guard(update)
@@ -520,13 +541,15 @@ def build_application():
         from ..llm import health, reset_cache
 
         if not ctx.args:
-            await update.message.reply_text(f"Available: `{', '.join(health()['available'])}`\n"
-                                            "Set: `/provider groq`", parse_mode=ParseMode.MARKDOWN)
+            await update.message.reply_text(
+                f"Available: `{', '.join(health()['available'])}`\nSet: `/provider groq`", parse_mode=ParseMode.MARKDOWN
+            )
             return
         applied, errors = R.set_many(provider=ctx.args[0].lower())
         reset_cache()
-        await update.message.reply_text(("✅ provider = " + ctx.args[0] if not errors else f"⚠️ {errors}"),
-                                        parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text(
+            ("✅ provider = " + ctx.args[0] if not errors else f"⚠️ {errors}"), parse_mode=ParseMode.MARKDOWN
+        )
 
     async def cmd_tools(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         from ..tools import tool_policy_summary
@@ -542,8 +565,9 @@ def build_application():
         if not ctx.args:
             snap = R.snapshot()
             rows = "\n".join(f"• `{k}` = {v}" for k, v in list(snap.items())[:18])
-            await update.message.reply_text(f"⚙️ *Settings*\n{rows}\n\nBadlo: `/settings owner_name Nikhil`",
-                                            parse_mode=ParseMode.MARKDOWN)
+            await update.message.reply_text(
+                f"⚙️ *Settings*\n{rows}\n\nBadlo: `/settings owner_name Nikhil`", parse_mode=ParseMode.MARKDOWN
+            )
             return
         if role != "owner":
             await update.message.reply_text("🔒 sirf owner settings badal sakta hai.")
@@ -581,8 +605,9 @@ def build_application():
             return
         rows = mgr.list_memories(limit=25)
         if not rows:
-            await update.message.reply_text("🧠 Memory khali hai. Bolo: `yaad rakh mera naam ...`",
-                                            parse_mode=ParseMode.MARKDOWN)
+            await update.message.reply_text(
+                "🧠 Memory khali hai. Bolo: `yaad rakh mera naam ...`", parse_mode=ParseMode.MARKDOWN
+            )
             return
         body = "\n".join(f"• [{r['kind']}] {r['text'][:110]}  `{r['id'][:8]}`" for r in rows)
         await update.message.reply_text(f"🧠 *Memory* ({len(rows)})\n{body}", parse_mode=ParseMode.MARKDOWN)
@@ -625,12 +650,13 @@ def build_application():
         if sub == "list" or not args:
             items = sch.get_store().list()
             if not items:
-                await update.message.reply_text("⏰ Koi automation nahi. Bolo: `har subah 8 baje mausam batao`",
-                                                parse_mode=ParseMode.MARKDOWN)
+                await update.message.reply_text(
+                    "⏰ Koi automation nahi. Bolo: `har subah 8 baje mausam batao`", parse_mode=ParseMode.MARKDOWN
+                )
                 return
             body = "\n".join(
-                f"{'🟢' if i['enabled'] else '🔴'} `{i['id'][:8]}` {i['schedule']} → {i['task'][:60]}"
-                for i in items)
+                f"{'🟢' if i['enabled'] else '🔴'} `{i['id'][:8]}` {i['schedule']} → {i['task'][:60]}" for i in items
+            )
             await update.message.reply_text(f"⏰ *Automations*\n{body}", parse_mode=ParseMode.MARKDOWN)
             return
         if role != "owner":
@@ -717,8 +743,9 @@ def build_application():
 
         started = time.time()
         try:
-            result = await run_agent(text, chat_id, role, on_progress=live.on_event,
-                                     bot=ctx.bot, loop=asyncio.get_running_loop())
+            result = await run_agent(
+                text, chat_id, role, on_progress=live.on_event, bot=ctx.bot, loop=asyncio.get_running_loop()
+            )
         except Exception as exc:  # agent crash → user ko readable error + traceback tail
             log.exception("telegram agent failed")
             await live.fail(exc, where="agent")
@@ -735,7 +762,8 @@ def build_application():
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
         return InlineKeyboardMarkup(
-            [[InlineKeyboardButton(label, callback_data=data) for label, data in row] for row in rows])
+            [[InlineKeyboardButton(label, callback_data=data) for label, data in row] for row in rows]
+        )
 
     MAIN_KB = lambda: _kb(  # noqa: E731
         [("📊 Status", "cmd:status"), ("🧰 Tools", "cmd:tools")],
@@ -748,14 +776,15 @@ def build_application():
         ok, _ = await _guard(update)
         if not ok:
             return
-        await update.message.reply_text("🎛️ *Control panel* — button dabao ya seedha likho:",
-                                        parse_mode=ParseMode.MARKDOWN, reply_markup=MAIN_KB())
+        await update.message.reply_text(
+            "🎛️ *Control panel* — button dabao ya seedha likho:", parse_mode=ParseMode.MARKDOWN, reply_markup=MAIN_KB()
+        )
 
     async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         """Inline button → same command function (koi duplicate logic nahi)."""
         q = update.callback_query
         await q.answer()
-        raw = (q.data or "")
+        raw = q.data or ""
         kind, _ = parse_callback(raw)
         if kind in ("gate", "tap"):
             user = q.from_user
@@ -774,8 +803,12 @@ def build_application():
             return
         data = raw.split(":", 1)[-1]
         handler = {
-            "status": cmd_status, "tools": cmd_tools, "settings": cmd_settings,
-            "memory": cmd_memory, "refresh": cmd_refresh, "mode": cmd_mode,
+            "status": cmd_status,
+            "tools": cmd_tools,
+            "settings": cmd_settings,
+            "memory": cmd_memory,
+            "refresh": cmd_refresh,
+            "mode": cmd_mode,
             "automation": cmd_automation,
         }.get(data)
         if data == "help_btn":
@@ -800,15 +833,17 @@ def build_application():
             cur = R.get("telegram_progress", "on")
             await update.message.reply_text(
                 f"📡 Live progress abhi: *{cur}*\nBadlo: `/progress on` ya `/progress off`",
-                parse_mode=ParseMode.MARKDOWN)
+                parse_mode=ParseMode.MARKDOWN,
+            )
             return
         val = ctx.args[0].lower()
         applied, errors = R.set_many(telegram_progress="on" if val in ("on", "1", "yes", "chalu") else "off")
         if errors:
             await update.message.reply_text("⚠️ " + "; ".join(errors))
         else:
-            await update.message.reply_text(f"✅ Live progress: *{applied.get('telegram_progress')}*",
-                                            parse_mode=ParseMode.MARKDOWN)
+            await update.message.reply_text(
+                f"✅ Live progress: *{applied.get('telegram_progress')}*", parse_mode=ParseMode.MARKDOWN
+            )
 
     async def cmd_approvals(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         ok, role = await _guard(update)
@@ -823,18 +858,40 @@ def build_application():
         else:
             await update.message.reply_text(text, parse_mode="HTML")
 
-    app = (Application.builder()
-           .token(S.TELEGRAM_BOT_TOKEN)
-           .connect_timeout(10).read_timeout(20).write_timeout(20).pool_timeout(10)
-           .concurrent_updates(True)
-           .build())
-    for name, fn in (("start", cmd_start), ("help", cmd_help), ("status", cmd_status), ("mode", cmd_mode),
-                     ("model", cmd_model), ("provider", cmd_provider), ("tools", cmd_tools),
-                     ("settings", cmd_settings), ("memory", cmd_memory), ("remember", cmd_remember),
-                     ("forget", cmd_forget), ("automation", cmd_automation), ("refresh", cmd_refresh),
-                     ("clear", cmd_clear), ("stop", cmd_stop), ("restart", cmd_restart), ("voice", cmd_voice),
-                     ("menu", cmd_menu), ("buttons", cmd_menu), ("progress", cmd_progress),
-                     ("approvals", cmd_approvals)):
+    app = (
+        Application.builder()
+        .token(S.TELEGRAM_BOT_TOKEN)
+        .connect_timeout(10)
+        .read_timeout(20)
+        .write_timeout(20)
+        .pool_timeout(10)
+        .concurrent_updates(True)
+        .build()
+    )
+    for name, fn in (
+        ("start", cmd_start),
+        ("help", cmd_help),
+        ("status", cmd_status),
+        ("mode", cmd_mode),
+        ("model", cmd_model),
+        ("provider", cmd_provider),
+        ("tools", cmd_tools),
+        ("settings", cmd_settings),
+        ("memory", cmd_memory),
+        ("remember", cmd_remember),
+        ("forget", cmd_forget),
+        ("automation", cmd_automation),
+        ("refresh", cmd_refresh),
+        ("clear", cmd_clear),
+        ("stop", cmd_stop),
+        ("restart", cmd_restart),
+        ("voice", cmd_voice),
+        ("menu", cmd_menu),
+        ("buttons", cmd_menu),
+        ("progress", cmd_progress),
+        ("approvals", cmd_approvals),
+        ("matrix", cmd_matrix),
+    ):
         app.add_handler(CommandHandler(name, fn))
     from telegram.ext import CallbackQueryHandler
 
@@ -875,10 +932,13 @@ def run_bot(poll_interval: float = 1.0) -> int:
         return 1
     if msg != "ok":
         print(msg)
-    logging.basicConfig(level=getattr(logging, S.LOG_LEVEL, logging.INFO),
-                        format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    print(f"🤖 {S.ASSISTANT_NAME} Telegram bot live — {S.TELEGRAM_BOT_TOKEN[:10]}… "
-          f"(owner: {S.TELEGRAM_OWNER_ID or 'auto-detect'})")
+    logging.basicConfig(
+        level=getattr(logging, S.LOG_LEVEL, logging.INFO), format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+    )
+    print(
+        f"🤖 {S.ASSISTANT_NAME} Telegram bot live — {S.TELEGRAM_BOT_TOKEN[:10]}… "
+        f"(owner: {S.TELEGRAM_OWNER_ID or 'auto-detect'})"
+    )
     print("   Telegram pe apne bot ko /start bhejo. Ctrl+C se band.")
     from ..automation import scheduler as sch
 

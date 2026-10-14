@@ -15,8 +15,8 @@ import asyncio
 import sys
 from typing import Any
 
-from ..config import settings as S
 from ..config import runtime as R
+from ..config import settings as S
 from ..runtime.agent import run_agent
 from ..runtime.status import agent_status
 from . import ui
@@ -42,6 +42,7 @@ COMMANDS: dict[str, str] = {
     "/clear": "Session clear (memory safe)",
     "/stop": "Background processes band karo",
     "/restart": "Jarvis restart karo",
+    "/matrix": "Capability x Surface matrix dikhao",
     "/doctor": "Poora system check",
     "/reasoning on|off": "Reasoning summary dikhana band/chalu",
     "/quit": "Band karo",
@@ -383,6 +384,12 @@ async def handle_command(line: str, session_id: str) -> bool:
         ui.cprint("🔄 Restart ho raha hai…", ui.ACCENT)
         res = restart_self()
         ui.cprint_safe(str(res.get("message", "")), ui.WARN)
+        return True
+
+    if cmd == "/matrix":
+        from ..runtime.matrix import format_matrix_table
+
+        ui.cprint(format_matrix_table())
         return True
 
     if cmd == "/doctor":
