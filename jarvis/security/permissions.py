@@ -65,6 +65,8 @@ class Decision:
 def tool_level(tool_name: str) -> str:
     """Tool ka name dekh kar level guess karo (registry se bhi override ho sakta hai)."""
     name = (tool_name or "").lower()
+    if name.startswith("tg_"):
+        return "WRITE"  # Telegram send tools — guest (READ-only) par blocked
     if any(k in name for k in ("delete", "remove", "kill", "uninstall", "wipe", "clear_cache")):
         return "DANGEROUS"
     if any(k in name for k in ("run_shell", "shell", "exec", "python_repl", "run_python", "process",

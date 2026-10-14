@@ -51,10 +51,16 @@ try:
 except Exception:  # pragma: no cover
     SYSTEM_OPS_TOOLS = []
 
+try:
+    from .telegram_tools import TELEGRAM_TOOLS
+except Exception:  # pragma: no cover
+    TELEGRAM_TOOLS = []
+
 __all__ = [
     "APP_FINDER_TOOLS", "BROWSER_TOOLS", "CODE_TOOLS", "FILE_TOOLS", "NOTE_TOOLS",
     "SYSTEM_TOOLS", "WEB_TOOLS", "PROCESS_TOOLS", "REPL_TOOLS", "SESSION_TOOLS",
     "SKILL_TOOLS", "MEMORY_TOOLS", "AUTOMATION_TOOLS", "SYSTEM_OPS_TOOLS",
+    "TELEGRAM_TOOLS",
     "DESKTOP_TOOLS", "RUNTIME_TOOLS", "RESEARCH_TOOLS", "ALL_TOOLS",
     "tools_for", "tool_names", "describe_tools", "tool_policy_summary",
 ]
@@ -70,7 +76,7 @@ CODE_GROUP = [*CODE_TOOLS]
 OPS_TOOLS = [*SYSTEM_OPS_TOOLS, *AUTOMATION_TOOLS]
 
 ALL_TOOLS = [*DESKTOP_TOOLS, *RUNTIME_TOOLS, *RESEARCH_TOOLS, *CODE_GROUP,
-             *MEMORY_TOOLS, *SKILL_TOOLS, *OPS_TOOLS]
+             *MEMORY_TOOLS, *SKILL_TOOLS, *OPS_TOOLS, *TELEGRAM_TOOLS]
 
 # Agent → tools mapping (supervisor routing isi se hoti hai)
 _TOOL_GROUPS: dict[str, list] = {
@@ -85,6 +91,7 @@ _TOOL_GROUPS: dict[str, list] = {
     "ops": OPS_TOOLS,
     "automation": AUTOMATION_TOOLS,
     "system_ops": SYSTEM_OPS_TOOLS,
+    "telegram": TELEGRAM_TOOLS,
     "all": ALL_TOOLS,
 }
 

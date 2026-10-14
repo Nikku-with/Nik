@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 from typing import Any
 
@@ -42,6 +43,8 @@ Seedha Hinglish me likho, slash command ki zaroorat nahi:
 /tools — kitne tools live hain
 /memory · /remember <baat> · /forget <baat>
 /automation [list|off <id>|run <id>]
+/approvals — pending dangerous approvals (Yes/No buttons)
+/menu — control panel buttons
 /refresh · /clear · /stop · /restart
 /help — yahi message
 """
@@ -78,19 +81,311 @@ def surface_for(role: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# inline buttons: gate approvals + agent-question taps (module level = testable)
+# ---------------------------------------------------------------------------
+GATE_CB_PREFIX = "gate:"   # gate:<request_id>:yes|no
+TAP_CB_PREFIX = "tgb:"     # tgb:<tap_id>:<index>
+CB_MAX_LEN = 64            # Telegram callback_data limit
+
+
+def parse_callback(data: str) -> tuple[str, dict[str, str]]:
+    """Inline button callback_data → (kind, payload). kind: gate|tap|cmd|unknown."""
+    raw = (data or "").strip()
+    if raw.startswith(GATE_CB_PREFIX):
+        parts = raw.split(":")
+        if len(parts) == 3 and parts[1] and parts[2] in ("yes", "no"):
+            return "gate", {"id": parts[1], "approved": parts[2]}
+        return "unknown", {"raw": raw}
+    if raw.startswith(TAP_CB_PREFIX):
+        parts = raw.split(":")
+        if len(parts) == 3 and parts[1] and parts[2].isdigit():
+            return "tap", {"id": parts[1], "index": parts[2]}
+        return "unknown", {"raw": raw}
+    if raw.startswith("cmd:"):
+        return "cmd", {"name": raw.split(":", 1)[1]}
+    return "unknown", {"raw": raw}
+
+
+def make_gate_keyboard(request_id: str):
+    """Yes/No inline keyboard (Dangerous-Command Gate)."""
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    yes_data = f"{GATE_CB_PREFIX}{request_id}:yes"
+    no_data = f"{GATE_CB_PREFIX}{request_id}:no"
+    if len(yes_data) > CB_MAX_LEN or len(no_data) > CB_MAX_LEN:
+        raise ValueError("callback_data 64 chars se lamba ho gaya")
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Haan, chalao", callback_data=yes_data),
+        InlineKeyboardButton("🚫 Nahi", callback_data=no_data),
+    ]])
+
+
+def gate_prompt_text(req) -> str:
+    """Approval message (HTML) — command preview + wajah + timeout."""
+    cmd = (req.command or req.kind or "?")
+    if len(cmd) > 300:
+        cmd = cmd[:300] + "…"
+    lines = [
+        "🔐 <b>Approval chahiye</b>",
+        f"Command: <code>{cmd}</code>",
+        f"Wajah: {req.why_flagged or 'dangerous'}",
+        f"Surface: {req.surface}",
+        "",
+        "✅ dabao = chalao · 🚫 dabao = cancel",
+        f"(⏳ {req.timeout_s}s me jawab nahi to auto-cancel)",
+    ]
+    return "\n".join(lines)
+
+
+def gate_tap_decision(role: str, data: str) -> tuple[bool | None, str]:
+    """Pure: gate button tap → (approved|None, reply). Resolve caller karta hai."""
+    kind, payload = parse_callback(data)
+    if kind != "gate":
+        return None, "🤔 ye button pehchana nahi."
+    if role != "owner":
+        return None, "🔒 sirf owner approve kar sakta hai — aapka tap ignore hua."
+    approved = payload["approved"] == "yes"
+    if approved:
+        return True, "✅ Approved — chala raha hoon…"
+    return False, "🚫 Denied — cancel kar diya."
+
+
+def handle_gate_callback(data: str, user_id, chat_id) -> str:
+    """Gate button tap: authorize → broker.resolve → reply. (sync, testable)"""
+    allowed, role = authorize(user_id, chat_id)
+    if not allowed:
+        return "🚫 Aap is bot ke allowed users me nahi ho."
+    approved, reply = gate_tap_decision(role, data)
+    if approved is None:
+        return reply
+    _, payload = parse_callback(data)
+    from ..security.gate import get_broker
+
+    ok = get_broker().resolve(
+        payload["id"], approved, by=f"telegram:{user_id}",
+        note="Telegram inline button se " + ("approved" if approved else "denied"))
+    if not ok:
+        return "⌛ ye approval expire ho chuka hai ya pehle se decided."
+    return reply
+
+
+# -- agent-question taps (tg_send_buttons wait mode) --------------------------
+_TAP_WAITERS: dict[str, dict[str, Any]] = {}
+_TAP_LOCK = threading.Lock()
+
+
+def register_tap_waiter(tap_id: str, buttons: list[dict[str, str]]) -> asyncio.Event:
+    """Tap aane tak rukne ke liye event banao (tool is par wait karta hai)."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    ev = asyncio.Event()
+    with _TAP_LOCK:
+        _TAP_WAITERS[tap_id] = {"event": ev, "value": None, "by": None,
+                                "buttons": list(buttons), "loop": loop}
+    return ev
+
+
+def tap_result(tap_id: str) -> dict[str, Any] | None:
+    with _TAP_LOCK:
+        box = _TAP_WAITERS.get(tap_id)
+        return dict(box) if box else None
+
+
+def resolve_tap(tap_id: str, index: int, user_label: str) -> bool:
+    """Button tap → waiter ko jagao. False = unknown/expired tap ya galat index."""
+    with _TAP_LOCK:
+        box = _TAP_WAITERS.get(tap_id)
+    if box is None:
+        return False
+    buttons = box.get("buttons") or []
+    if not (0 <= index < len(buttons)):
+        return False
+    box["value"] = buttons[index].get("value", buttons[index].get("label", ""))
+    box["by"] = user_label
+    ev, loop = box.get("event"), box.get("loop")
+    try:
+        if loop is not None and loop.is_running():
+            loop.call_soon_threadsafe(ev.set)
+        else:
+            ev.set()
+    except Exception:
+        try:
+            ev.set()
+        except Exception:
+            pass
+    return True
+
+
+def cancel_tap_waiter(tap_id: str) -> None:
+    with _TAP_LOCK:
+        _TAP_WAITERS.pop(tap_id, None)
+
+
+def handle_tap_callback(data: str, user_id, chat_id) -> str:
+    """Agent-question button tap: authorize → waiter resolve → reply."""
+    allowed, role = authorize(user_id, chat_id)
+    if not allowed:
+        return "🚫 Aap is bot ke allowed users me nahi ho."
+    kind, payload = parse_callback(data)
+    if kind != "tap":
+        return "🤔 ye button pehchana nahi."
+    ok = resolve_tap(payload["id"], int(payload["index"]), f"{role}:{user_id}")
+    if not ok:
+        return "⌛ ye sawaal expire ho chuka hai."
+    box = tap_result(payload["id"]) or {}
+    label = ""
+    try:
+        label = (box.get("buttons") or [])[int(payload["index"])].get("label", "")
+    except Exception:
+        pass
+    return f"✅ {label or 'noted'} — agent ko bhej diya."
+
+
+# -- send retry (429 / 5xx / timeout) ------------------------------------------
+async def send_with_retry(factory, *, tries: int = 3, base_delay: float = 1.0,
+                          what: str = "telegram send"):
+    """Transient Telegram failures par retry, phir raise.
+
+    `factory`: zero-arg callable jo coroutine wapas de (har try me naya).
+    Exception-name duck-typing hai taaki PTB classes ke bina bhi test ho sake.
+    """
+    last: Exception | None = None
+    for attempt in range(1, tries + 1):
+        try:
+            return await factory()
+        except Exception as exc:
+            transient = type(exc).__name__ in (
+                "RetryAfter", "TimedOut", "NetworkError", "BadGateway",
+                "ServiceUnavailable", "GatewayTimeout", "TimeoutError",
+                "ConnectTimeout", "ReadTimeout", "PoolTimeout",
+            )
+            last = exc
+            if not transient or attempt >= tries:
+                break
+            delay = base_delay * (2 ** (attempt - 1))
+            retry_after = getattr(exc, "retry_after", None)
+            if retry_after:
+                try:
+                    delay = float(retry_after) + 1.0
+                except Exception:
+                    pass
+            log.warning("%s fail (%s), retry %d/%d after %.1fs",
+                        what, exc, attempt, tries, delay)
+            await asyncio.sleep(delay)
+    assert last is not None
+    raise last
+
+
+def format_pending_approvals() -> tuple[str, Any]:
+    """Pending gate requests → (HTML text, inline keyboard ya None)."""
+    from ..security.gate import get_broker
+
+    pend = get_broker().pending()
+    if not pend:
+        return "✅ Koi pending approval nahi hai.", None
+    lines = ["🔐 <b>Pending approvals</b> (button dabao):", ""]
+    rows = []
+    for req in pend[:6]:
+        cmd = req.command or req.kind or "?"
+        short = cmd if len(cmd) <= 60 else cmd[:60] + "…"
+        left = max(0, int(req.expires_at - time.time()))
+        lines.append(f"• <code>{short}</code> ({req.surface}, ⏳{left}s)")
+        try:
+            from telegram import InlineKeyboardButton
+
+            rows.append([
+                InlineKeyboardButton(f"✅ {short[:20]}",
+                                     callback_data=f"{GATE_CB_PREFIX}{req.id}:yes"),
+                InlineKeyboardButton("🚫 Nahi",
+                                     callback_data=f"{GATE_CB_PREFIX}{req.id}:no"),
+            ])
+        except Exception:
+            pass
+    kb = None
+    if rows:
+        try:
+            from telegram import InlineKeyboardMarkup
+
+            kb = InlineKeyboardMarkup(rows)
+        except Exception:
+            kb = None
+    return "\n".join(lines), kb
+
+
+def _guest_deny_asker(req) -> str:
+    """Guest surface: dangerous par turant no (guest ke paas approve power nahi)."""
+    return "no"
+
+
+def make_owner_asker(bot, chat_id, loop):
+    """Owner asker: approval ko inline Yes/No buttons se poochho, tap ka wait karo.
+
+    Worker thread se chalta hai (broker sync hai) — send ke liye bot loop use hota hai.
+    """
+    def _ask(req) -> str:
+        from ..security.gate import get_broker
+
+        broker = get_broker()
+        text = gate_prompt_text(req)
+        try:
+            kb = make_gate_keyboard(req.id)
+        except Exception:
+            kb = None
+
+        async def _send():
+            if kb is not None:
+                return await bot.send_message(chat_id, text, parse_mode="HTML",
+                                              reply_markup=kb)
+            return await bot.send_message(chat_id, text, parse_mode="HTML")
+
+        try:
+            fut = asyncio.run_coroutine_threadsafe(
+                send_with_retry(_send, what="gate approval"), loop)
+            fut.result(timeout=30)
+        except Exception as exc:
+            log.warning("gate approval bheja nahi gaya: %s", exc)
+            return "no"  # pooch hi nahi paye → deny (fail closed)
+        ev = broker._events.get(req.id)
+        if ev is not None:
+            ev.wait(timeout=req.timeout_s)
+            if req.status == "approved":
+                return "yes"
+        return "no"
+
+    return _ask
+
+
+# ---------------------------------------------------------------------------
 # agent bridge (ek hi runner: LangGraph)
 # ---------------------------------------------------------------------------
-async def run_agent(text: str, chat_id: int | str, role: str = "owner", on_progress=None) -> dict[str, Any]:
+async def run_agent(text: str, chat_id: int | str, role: str = "owner", on_progress=None,
+                bot=None, loop=None) -> dict[str, Any]:
     """Telegram message → wahi LangGraph agent → result.
 
     `on_progress`: live thinking/tool feed (LiveProgress.on_event) — isse user ko
     real-time dikhta hai ki agent kya kar raha hai, aur error bhi surface hote hain.
+    `bot`+`loop` milne par dangerous commands owner se inline Yes/No buttons se
+    pooche jaate hain (Dangerous-Command Gate); guest par turant deny.
     """
     from ..runtime.agent import run_agent as core_run
+    from ..security.gate import gate_context
 
     session = f"telegram:{chat_id}"
-    result = await core_run(text, session_id=session, surface=surface_for(role),
-                            on_progress=on_progress)
+    surface = surface_for(role)
+    asker = None
+    if role == "owner" and bot is not None and loop is not None:
+        asker = make_owner_asker(bot, chat_id, loop)
+    elif role != "owner":
+        asker = _guest_deny_asker
+    if asker is None:
+        result = await core_run(text, session_id=session, surface=surface,
+                                on_progress=on_progress)
+    else:
+        with gate_context(surface, asker=asker):
+            result = await core_run(text, session_id=session, surface=surface,
+                                    on_progress=on_progress)
     # AgentResult → dict (bot ke baaki handlers isi shape par chalte hain)
     data = result.as_dict() if hasattr(result, "as_dict") else dict(result)
     data.setdefault("response", data.get("answer", ""))
@@ -134,9 +429,11 @@ def build_application():
         )
 
     async def _reply_long(msg, text: str) -> None:
-        """Telegram ka 4096 char limit — lambe jawab ko todo."""
+        """Telegram ka 4096 char limit — lambe jawab ko todo (429/5xx par retry)."""
         for chunk_start in range(0, len(text), 3800):
-            await msg.reply_text(text[chunk_start:chunk_start + 3800], parse_mode=ParseMode.MARKDOWN)
+            chunk = text[chunk_start:chunk_start + 3800]
+            await send_with_retry(lambda c=chunk: msg.reply_text(c, parse_mode=ParseMode.MARKDOWN),
+                                  what="reply")
 
     async def _guard(update: Update) -> tuple[bool, str]:
         user = update.effective_user
@@ -415,7 +712,8 @@ def build_application():
 
         started = time.time()
         try:
-            result = await run_agent(text, chat_id, role, on_progress=live.on_event)
+            result = await run_agent(text, chat_id, role, on_progress=live.on_event,
+                                     bot=ctx.bot, loop=asyncio.get_running_loop())
         except Exception as exc:  # agent crash → user ko readable error + traceback tail
             log.exception("telegram agent failed")
             await live.fail(exc, where="agent")
@@ -452,7 +750,24 @@ def build_application():
         """Inline button → same command function (koi duplicate logic nahi)."""
         q = update.callback_query
         await q.answer()
-        data = (q.data or "").split(":", 1)[-1]
+        raw = (q.data or "")
+        kind, _ = parse_callback(raw)
+        if kind in ("gate", "tap"):
+            user = q.from_user
+            chat = q.message.chat if q.message else None
+            uid = user.id if user else 0
+            cid = chat.id if chat else 0
+            if kind == "gate":
+                reply = handle_gate_callback(raw, uid, cid)
+            else:
+                reply = handle_tap_callback(raw, uid, cid)
+            try:
+                await q.edit_message_reply_markup(reply_markup=None)
+            except Exception:
+                pass  # purana message / already cleared
+            await q.message.reply_text(reply)
+            return
+        data = raw.split(":", 1)[-1]
         handler = {
             "status": cmd_status, "tools": cmd_tools, "settings": cmd_settings,
             "memory": cmd_memory, "refresh": cmd_refresh, "mode": cmd_mode,
@@ -490,8 +805,22 @@ def build_application():
             await update.message.reply_text(f"✅ Live progress: *{applied.get('telegram_progress')}*",
                                             parse_mode=ParseMode.MARKDOWN)
 
+    async def cmd_approvals(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        ok, role = await _guard(update)
+        if not ok:
+            return
+        if role != "owner":
+            await update.message.reply_text("🔒 sirf owner approvals dekh sakta hai.")
+            return
+        text, kb = format_pending_approvals()
+        if kb is not None:
+            await update.message.reply_text(text, parse_mode="HTML", reply_markup=kb)
+        else:
+            await update.message.reply_text(text, parse_mode="HTML")
+
     app = (Application.builder()
            .token(S.TELEGRAM_BOT_TOKEN)
+           .connect_timeout(10).read_timeout(20).write_timeout(20).pool_timeout(10)
            .concurrent_updates(True)
            .build())
     for name, fn in (("start", cmd_start), ("help", cmd_help), ("status", cmd_status), ("mode", cmd_mode),
@@ -499,7 +828,8 @@ def build_application():
                      ("settings", cmd_settings), ("memory", cmd_memory), ("remember", cmd_remember),
                      ("forget", cmd_forget), ("automation", cmd_automation), ("refresh", cmd_refresh),
                      ("clear", cmd_clear), ("stop", cmd_stop), ("restart", cmd_restart), ("voice", cmd_voice),
-                     ("menu", cmd_menu), ("buttons", cmd_menu), ("progress", cmd_progress)):
+                     ("menu", cmd_menu), ("buttons", cmd_menu), ("progress", cmd_progress),
+                     ("approvals", cmd_approvals)):
         app.add_handler(CommandHandler(name, fn))
     from telegram.ext import CallbackQueryHandler
 
@@ -546,5 +876,5 @@ def run_bot(poll_interval: float = 1.0) -> int:
           f"(owner: {S.TELEGRAM_OWNER_ID or 'auto-detect'})")
     print("   Telegram pe apne bot ko /start bhejo. Ctrl+C se band.")
     app = build_application()
-    app.run_polling(poll_interval=poll_interval, drop_pending_updates=True)
+    app.run_polling(poll_interval=poll_interval, timeout=20, drop_pending_updates=True)
     return 0

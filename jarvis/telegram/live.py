@@ -25,6 +25,15 @@ MAX_EVENTS_SHOWN = 8
 FLUSH_INTERVAL = 1.1
 
 
+async def _attempt(factory, what: str = "live send"):
+    """Send with retry (429/5xx/timeout) — .bot se lazy import (cycle-safe)."""
+    try:
+        from .bot import send_with_retry
+    except Exception:
+        return await factory()
+    return await send_with_retry(factory, tries=2, what=what)
+
+
 class LiveProgress:
     """Ek Telegram message jo live update hota hai (sync on_event + async flusher)."""
 
@@ -48,8 +57,10 @@ class LiveProgress:
         if not self.enabled:
             return
         try:
-            self._live_msg = await self.message.reply_text(self._html(), parse_mode="HTML",
-                                                           disable_web_page_preview=True)
+            self._live_msg = await _attempt(
+                lambda: self.message.reply_text(self._html(), parse_mode="HTML",
+                                                disable_web_page_preview=True),
+                "live start")
         except Exception:
             self._live_msg = None
             return
@@ -72,8 +83,10 @@ class LiveProgress:
         if self._live_msg is None:
             return
         try:
-            await self._live_msg.edit_text(self._html(), parse_mode="HTML",
-                                           disable_web_page_preview=True)
+            await _attempt(
+                lambda: self._live_msg.edit_text(self._html(), parse_mode="HTML",
+                                                 disable_web_page_preview=True),
+                "live flush")
         except Exception:
             pass  # "message is not modified" / flood-wait — ignore, final message phir bhi jayega
 
@@ -124,11 +137,12 @@ class LiveProgress:
         if errors:
             body += self._error_block(errors)
         if not self.enabled or self._live_msg is None:
-            await self.message.reply_text(body[:4000])
+            await _attempt(lambda: self.message.reply_text(body[:4000]), "live final")
             return
         try:
-            await self._live_msg.edit_text(body[:4000], parse_mode="HTML",
-                                           disable_web_page_preview=True)
+            await _attempt(lambda: self._live_msg.edit_text(body[:4000], parse_mode="HTML",
+                                                             disable_web_page_preview=True),
+                           "live final")
         except Exception:
             await self._fallback_send(body)
 
@@ -147,22 +161,23 @@ class LiveProgress:
         text = "\n\n".join(parts)
         if self._live_msg is not None:
             try:
-                await self._live_msg.edit_text(text[:4000], parse_mode="HTML")
+                await _attempt(lambda: self._live_msg.edit_text(text[:4000], parse_mode="HTML"),
+                               "live error")
                 return
             except Exception:
                 pass
-        await self.message.reply_text(text[:4000], parse_mode="HTML")
+        await _attempt(lambda: self.message.reply_text(text[:4000], parse_mode="HTML"), "live error")
 
     async def _fallback_send(self, body: str) -> None:
         """HTML fail hua (gandha input) → progress message hatao, plain text bhejo."""
         if self._live_msg is not None:
             try:
-                await self._live_msg.delete()
+                await _attempt(lambda: self._live_msg.delete(), "live cleanup")
             except Exception:
                 pass
         plain = body.replace("<b>", "").replace("</b>", "").replace("<i>", "").replace("</i>", "")
         plain = plain.replace("<code>", "").replace("</code>", "").replace("<pre>", "").replace("</pre>", "")
-        await self.message.reply_text(plain[:4000])
+        await _attempt(lambda: self.message.reply_text(plain[:4000]), "live fallback")
 
     def _error_block(self, errors: list[str]) -> str:
         shown = "\n".join(f"• {md_to_html(str(e)[:300])}" for e in errors[:4])
