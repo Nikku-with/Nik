@@ -112,8 +112,13 @@ def collect_checks() -> list[tuple[str, str, str]]:
     except Exception as exc:
         checks.append(("fail", "Memory", str(exc)[:80]))
 
+    try:
+        from ..security.gate import effective_mode
+        _gate_mode = effective_mode()
+    except Exception:
+        _gate_mode = S.EXEC_APPROVAL
     checks.append(("ok" if S.SHELL_ENABLED else "warn", "Shell executor",
-                   f"enabled={S.SHELL_ENABLED} approval={S.EXEC_APPROVAL} token='{S.EXEC_APPROVAL_TOKEN}'"))
+                   f"enabled={S.SHELL_ENABLED} gate={_gate_mode} (JARVIS_EXEC_APPROVAL=off|risky|all)"))
     try:
         from ..runtime import process_manager as pm
 

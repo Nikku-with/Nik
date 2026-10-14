@@ -37,6 +37,19 @@ except Exception:  # pragma: no cover
     HTMLResponse = JSONResponse = StreamingResponse = None  # type: ignore
 
 
+def _web_asker(req) -> str:
+    """Web UI asker — approval modal se resolve hota hai (event), warna timeout par no."""
+    from ..security.gate import get_broker
+
+    broker = get_broker()
+    ev = broker._events.get(req.id)
+    if ev is not None:
+        ev.wait(timeout=req.timeout_s)
+        if req.status == "approved":
+            return "yes"
+    return "no"
+
+
 def _status() -> dict[str, Any]:
     from ..config import has_browser_use, has_browser_use_cli, has_livekit
 
@@ -56,6 +69,13 @@ def _status() -> dict[str, Any]:
 if fastapi_available:
     app = FastAPI(title=f"{ASSISTANT_NAME} — NikhilAI ", version="2.0")
 
+    from ..security.gate import gate_context as _gate_ctx
+    from ..security.gate import get_broker as _get_broker
+    from ..security.gate import register_asker as _register_asker
+
+    _register_asker("api", _web_asker)
+    _register_asker("web", _web_asker)
+
     @app.get("/health")
     async def health() -> JSONResponse:
         return JSONResponse(_status())
@@ -67,7 +87,8 @@ if fastapi_available:
         if not message:
             return JSONResponse({"error": "message khali hai"}, status_code=400)
         started = time.time()
-        result = (await run_agent(message, session_id=session_id, surface="api")).as_dict()
+        with _gate_ctx("api"):
+            result = (await run_agent(message, session_id=session_id, surface="api")).as_dict()
         return JSONResponse(
             {
                 "answer": result.get("answer", ""),
@@ -92,8 +113,9 @@ if fastapi_available:
         message = (payload or {}).get("task", "").strip()
         if not message:
             return JSONResponse({"error": "task khali hai"}, status_code=400)
-        result = (await run_agent(message, session_id=(payload or {}).get("session_id", "api"),
-                                  surface="api")).as_dict()
+        with _gate_ctx("api"):
+            result = (await run_agent(message, session_id=(payload or {}).get("session_id", "api"),
+                                      surface="api")).as_dict()
         safe = {k: v for k, v in result.items() if k not in ("messages",)}
         return JSONResponse(json.loads(json.dumps(safe, default=str)))
 
@@ -158,6 +180,30 @@ if fastapi_available:
     @app.get("/graph")
     async def graph() -> JSONResponse:
         return JSONResponse({"mermaid": graph_mermaid(), "summary": graph_summary()})
+
+    @app.get("/approvals")
+    async def approvals() -> JSONResponse:
+        """Pending dangerous-command approvals (web modal inhe dikhata hai)."""
+        broker = _get_broker()
+        return JSONResponse({"pending": [r.to_dict() for r in broker.pending()],
+                             "recent": broker.recent_decisions(10)})
+
+    @app.post("/approvals/resolve")
+    async def approvals_resolve(payload: dict) -> JSONResponse:
+        """{id: str, approved: bool} — web modal se human decision."""
+        broker = _get_broker()
+        approval_id = str((payload or {}).get("id", ""))
+        approved = bool((payload or {}).get("approved", False))
+        ok = broker.resolve(approval_id, approved, by="web",
+                            note="web modal se " + ("approved" if approved else "denied"))
+        req = broker.get(approval_id)
+        return JSONResponse({"ok": ok, "status": req.status if req else "unknown"})
+
+    @app.get("/gate")
+    async def gate_status() -> JSONResponse:
+        from ..security.gate import effective_mode
+
+        return JSONResponse({"mode": effective_mode(), "pending": len(_get_broker().pending())})
 
     @app.get("/", response_class=HTMLResponse)
     async def index() -> str:

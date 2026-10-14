@@ -437,7 +437,8 @@ SAFETY_ALLOW_SHELL = env_bool("ALLOW_SHELL", True)
 SAFETY_ALLOW_FILE_DELETE = env_bool("ALLOW_FILE_DELETE", True)
 SAFETY_SANDBOX_ROOT = Path(_first("SANDBOX_ROOT", "JARVIS_SANDBOX_ROOT") or str(WORKSPACE_DIR)).expanduser()
 EXEC_APPROVAL = (_first("EXEC_APPROVAL", "JARVIS_EXEC_APPROVAL") or "risky").lower()  # off | risky | all
-EXEC_APPROVAL_TOKEN = _first("EXEC_TOKEN", "JARVIS_EXEC_TOKEN") or "haan-karo"
+# NOTE: purana EXEC_APPROVAL_TOKEN ("haan-karo") hata diya — model-visible approval ka
+# koi rasta nahi hai. Approvals sirf human deta hai via jarvis/security/gate.py broker.
 PROCESS_MAX = env_int("MAX_PROCESSES", env_int("JARVIS_MAX_PROCESSES", 12))
 
 MAX_FILE_READ_CHARS = env_int("MAX_FILE_READ_CHARS", 20000)

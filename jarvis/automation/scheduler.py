@@ -276,8 +276,13 @@ def run_now(ident: str) -> dict[str, Any]:
 def _execute(auto: Automation) -> str:
     if RUNNER is None:
         return "(runner set nahi hai — agent load hone ke baad chalega)"
+    from ..security.gate import gate_context
+
     try:
-        out = RUNNER(auto.task, auto.id)
+        # surface=automation: dangerous steps Telegram/CLI par pooche jayenge;
+        # koi jawab na de to step skip + report (kabhi auto-approve nahi)
+        with gate_context("automation"):
+            out = RUNNER(auto.task, auto.id)
         get_store().mark_run(auto, out or "(no output)")
         return out or "(no output)"
     except Exception as exc:

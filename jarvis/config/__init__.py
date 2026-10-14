@@ -33,7 +33,6 @@ from .settings import (  # explicit re-exports (IDE + star-import dono ke liye)
     DUCKDUCKGO_ENABLED,
     DEFAULT_MODE,
     EXEC_APPROVAL,
-    EXEC_APPROVAL_TOKEN,
     FILE_SEARCH_ROOTS,
     GEMINI_API_KEY,
     GROQ_API_KEY,

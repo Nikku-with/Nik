@@ -296,16 +296,19 @@ async def run_agent(
 
 async def _run_agent_inner(text, session_id, surface, use_fast_path, voice_output,
                            started, on_progress, CallbackSink, emit, use_sink):
+    from ..security.gate import gate_context
     # agar caller ne apna callback diya to wahi sink use karo, warna bahar wala (contextvar) sink
     sink = CallbackSink(on_progress) if on_progress else None
-    if sink is None:
-        emit("start", f"Request mila: {text[:80]}", detail=text)
-        return await _run_agent_body(text, session_id, surface, use_fast_path, voice_output,
-                                     started, emit)
-    with use_sink(sink):
-        emit("start", f"Request mila: {text[:80]}", detail=text)
-        return await _run_agent_body(text, session_id, surface, use_fast_path, voice_output,
-                                     started, emit)
+    # Gate surface: dangerous approvals usi surface par pooche jayenge jahan request aayi
+    with gate_context(surface):
+        if sink is None:
+            emit("start", f"Request mila: {text[:80]}", detail=text)
+            return await _run_agent_body(text, session_id, surface, use_fast_path, voice_output,
+                                         started, emit)
+        with use_sink(sink):
+            emit("start", f"Request mila: {text[:80]}", detail=text)
+            return await _run_agent_body(text, session_id, surface, use_fast_path, voice_output,
+                                         started, emit)
 
 
 async def _run_agent_body(text, session_id, surface, use_fast_path, voice_output, started, emit):

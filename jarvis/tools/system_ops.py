@@ -293,17 +293,18 @@ def restart_self(delay_s: int = 2) -> SystemResult:
       3. `EXEC_APPROVAL` on ho to approval token chahiye.
     Warna hum *safe* jawab dete hain — exec nahi karte.
     """
-    from ..config import EXEC_APPROVAL, EXEC_APPROVAL_TOKEN
-
     if os.environ.get("NIKHILAI_ALLOW_RESTART", "1") != "1":
         return {"ok": False, "message": "restart disabled (NIKHILAI_ALLOW_RESTART=0)"}
     if os.environ.get("NIKHILAI_MAIN_PROCESS") != "1":
         return {"ok": False, "message": "restart sirf `python -m jarvis` ke andar chalta hai "
                                         "(library/script se process replace nahi karte). "
                                         "Yehi command dobara chalao."}
-    if EXEC_APPROVAL and os.environ.get("NIKHILAI_EXEC_APPROVED") != "1":
-        return {"ok": False, "message": f"restart ke liye approval chahiye — token `{EXEC_APPROVAL_TOKEN}` "
-                                        "confirm karo (ya EXEC_APPROVAL=0 karo)"}
+    # Dangerous-Command Gate — owner se human approval (model-visible bypass nahi)
+    from ..security.gate import check_action
+
+    gate = check_action("restart", "restart_self (Jarvis process replace + dobara start)")
+    if not gate.allowed:
+        return {"ok": False, "message": gate.message}
     try:
         os.environ["NIKHILAI_RESTARTED_AT"] = str(time.time())
         argv = [python_executable(), "-m", "jarvis", *sys.argv[1:]]

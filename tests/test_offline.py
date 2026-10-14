@@ -364,14 +364,25 @@ def t_process_manager() -> None:
 
 
 async def t_approval_gate() -> None:
+    from jarvis.security.gate import gate_context
     from jarvis.tools.system_tools import run_shell_command
 
-    blocked = await run_shell_command.ainvoke({"command": "rm -rf /", "confirmed": True})
-    check("approval: catastrophic blocked always", "Blocked" in blocked, blocked[:60])
+    _no = lambda req: "no"  # noqa: E731
+    _yes = lambda req: "yes"  # noqa: E731
 
-    risky = await run_shell_command.ainvoke({"command": "rm -rf ./some_random_dir_xyz"})
-    check("approval: risky needs confirmation", "risky" in risky.lower() or "approval" in risky.lower(),
-          risky.splitlines()[0][:70])
+    # catastrophic command: model ka "confirmed" bhi ho to Gate poochega, deny par cancel
+    with gate_context("cli", asker=_no):
+        blocked = await run_shell_command.ainvoke({"command": "rm -rf /", "confirmed": True})
+    check("approval: catastrophic asks + deny cancels", "Cancel" in blocked and "🔐" in blocked,
+          blocked[:60])
+    with gate_context("cli", asker=_yes):
+        allowed = await run_shell_command.ainvoke({"command": "rm -rf ./some_random_dir_xyz"})
+    check("approval: human yes par chalta hai", "[exit 0]" in allowed, allowed[:60])
+
+    with gate_context("cli", asker=_no):
+        risky = await run_shell_command.ainvoke({"command": "rm -rf ./some_random_dir_xyz"})
+    check("approval: risky needs confirmation", "risky" in risky.lower() or "approval" in risky.lower()
+          or "cancel" in risky.lower(), risky.splitlines()[0][:70])
 
     plain = await run_shell_command.ainvoke({"command": "echo jarvis-shell-ok"})
     check("approval: normal command runs", "jarvis-shell-ok" in plain, plain.strip().splitlines()[-1][:50])

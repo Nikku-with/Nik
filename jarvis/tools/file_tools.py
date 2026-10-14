@@ -574,6 +574,12 @@ async def folder_file(command: str) -> str:
             p = Path(hits[0]["path"])
             if _is_protected(p):
                 return f"🚫 Protected path — delete blocked: {p}"
+            # Dangerous-Command Gate — delete hamesha human approval maangta hai
+            from ..security.gate import check_action
+
+            gate = await asyncio.to_thread(check_action, "delete", f"folder_file delete: {p}")
+            if not gate.allowed:
+                return gate.message
             if p.is_dir():
                 shutil.rmtree(p)
             else:
@@ -610,6 +616,19 @@ async def write_file(path: str, content: str) -> str:
         p = WORKSPACE_DIR / p
     if _is_protected(p):
         return f"🚫 Protected path — write blocked: {p}"
+    # Dangerous-Command Gate — non-empty file overwrite par human approval
+    if p.exists() and p.is_file():
+        try:
+            size = p.stat().st_size
+        except Exception:
+            size = 0
+        if size > 0:
+            from ..security.gate import check_action
+
+            gate = await asyncio.to_thread(
+                check_action, "overwrite", f"write_file overwrite ({size} bytes): {p}")
+            if not gate.allowed:
+                return gate.message
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding="utf-8")

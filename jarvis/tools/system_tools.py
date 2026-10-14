@@ -23,8 +23,6 @@ from pathlib import Path
 from langchain_core.tools import tool
 
 from ..config import (
-    EXEC_APPROVAL,
-    EXEC_APPROVAL_TOKEN,
     LOGS_DIR,
     SAFETY_ALLOW_SHELL,
     SCREENSHOTS_DIR,
@@ -56,64 +54,9 @@ APP_REGISTRY: dict[str, dict[str, str]] = {
     "task manager": {"windows": "taskmgr.exe", "macos": "Activity Monitor", "linux": "gnome-system-monitor"},
 }
 
-_DANGEROUS = (
-    "rm -rf /", "rm -rf /*", "mkfs", "dd if=", ":(){", "format c:", "del /f /s /q c:\\",
-    "shutdown", "reboot", "> /dev/sda", "chmod -R 777 /", "diskpart",
-)
-
-# risky-but-allowed commands: approval mode "risky" me inpar owner ka token chahiye
-_RISKY_PATTERNS = (
-    "rm ", "rmdir", "del ", "erase ", "kill ", "pkill", "taskkill", "sudo", "runas",
-    "pip install", "npm install", "pnpm install", "yarn add", "apt install", "apt-get install",
-    "brew install", "winget install", "choco install", "git push", "git reset --hard",
-    "git clean", "drop table", "truncate", "shutil.rmtree", ">", "mkfs", "chmod", "chown",
-    "systemctl", "sc delete", "netsh", "reg delete", "schtasks /delete", "curl -X POST", "wget",
-)
-
-
-# approval kitni der valid rahe (ek baar owner ne "haan" bola to 5 min tak)
-APPROVAL_TTL_S = float(os.environ.get("NIKHILAI_APPROVAL_TTL_S", "300"))
-
-
-def _approval_fresh(granted: dict) -> bool:  # type: ignore[type-arg]
-    """Approval token fresh hai?
-
-    PEHLE ka bug: `grant_exec_approval` ek baar chalta tha aur `jarvis_memory.json` me
-    hamesha ke liye `{token: True}` pada rehta tha — matlab ek hi "haan" ke baad risky
-    commands (rm/kill/pip install) permanently bina confirmation chalne lagti thin.
-    Ab: time-stamped + ek hi baar ka (use hote hi consume).
-    """
-    entry = (granted or {}).get(EXEC_APPROVAL_TOKEN)
-    if not entry:
-        return False
-    if entry is True:  # purana format — bharosa mat karo, dubara "haan" mangwao
-        return False
-    try:
-        at = float(entry.get("at") or 0)
-    except Exception:
-        return False
-    return (time.time() - at) <= APPROVAL_TTL_S
-
-
-def _consume_approval() -> None:
-    """Token use hote hi hata do — ek approval = ek command."""
-    try:
-        from ..memory.session_state import get_state
-
-        state = get_state()
-        granted = state.get("exec_approval_granted", {}) or {}
-        granted.pop(EXEC_APPROVAL_TOKEN, None)
-        state.set("exec_approval_granted", granted)
-    except Exception:
-        pass
-
-
-def _is_risky(command: str) -> str | None:
-    low = (command or "").lower()
-    for pat in _RISKY_PATTERNS:
-        if pat in low:
-            return pat
-    return None
+# NOTE: dangerous/risky detection ab `jarvis/security/gate.py` me hai (real parsing:
+# shlex per segment, flag normalize, sudo/bash -c unwrap). Yahan koi substring gate nahi —
+# model kabhi approve nahi kar sakta, sirf human (CLI/Telegram/voice/web) approval deta hai.
 
 
 def _expand_secrets(text: str) -> str:
@@ -189,6 +132,35 @@ async def _launch(target: str) -> tuple[bool, str]:
         return False, f"'{target}' machine par installed nahi mila"
     except Exception as exc:  # pragma: no cover
         return False, str(exc)[:200]
+
+
+_LAUNCH_TTL_S = 24 * 3600
+
+
+def record_app_launch(title: str) -> None:
+    """Agent ne ye app khola — close_app isse ownership verify karta hai (Gate)."""
+    try:
+        from ..memory.session_state import get_state
+
+        launched = get_state().get("launched_apps", {}) or {}
+        launched[str(title or "").strip().lower()] = time.time()
+        # purane entries saaf karo
+        cutoff = time.time() - _LAUNCH_TTL_S
+        launched = {k: v for k, v in launched.items() if float(v or 0) >= cutoff}
+        get_state().set("launched_apps", launched)
+    except Exception:
+        pass
+
+
+def was_launched_by_agent(title: str) -> bool:
+    try:
+        from ..memory.session_state import get_state
+
+        launched = get_state().get("launched_apps", {}) or {}
+        at = float(launched.get(str(title or "").strip().lower()) or 0)
+        return (time.time() - at) <= _LAUNCH_TTL_S
+    except Exception:
+        return False
 
 
 async def focus_window(title_keyword: str) -> bool:
@@ -370,6 +342,7 @@ async def open_app(app_title: str) -> str:
     ok, detail = await _launch(target)
     if not ok:
         return f"❌ {app_title} launch fail: {detail}"
+    record_app_launch(app_title)
     await asyncio.sleep(1.2)
     focused = await focus_window(app_title if IS_WINDOWS else Path(target).stem)
     return f"🚀 {app_title} launch ho gaya" + (" aur focus me hai." if focused else ".")
@@ -381,6 +354,13 @@ async def close_app(window_title: str) -> str:
     kw = (window_title or "").strip().lower()
     if not kw:
         return "❌ Khali title."
+    # Gate: agent ne khud ye app nahi khola tha to close = foreign kill → human approval
+    if not was_launched_by_agent(window_title):
+        from ..security.gate import check_action
+
+        gate = await asyncio.to_thread(check_action, "kill", f"close_app({window_title})")
+        if not gate.allowed:
+            return gate.message
     try:
         if IS_WINDOWS:
             try:
@@ -562,20 +542,11 @@ async def take_screenshot(name: str = "screen") -> str:
         return f"❌ screenshot error: {exc}"
 
 
-def _is_dangerous(cmd: str) -> str | None:
-    low = (cmd or "").lower()
-    for bad in _DANGEROUS:
-        if bad in low:
-            return bad
-    return None
-
-
 @tool
 async def run_shell_command(
     command: str,
     cwd: str = "",
     timeout: int = 120,
-    confirmed: bool = False,
     background: bool = False,
     name: str = "",
 ) -> str:
@@ -583,44 +554,21 @@ async def run_shell_command(
 
     • background=True → process background me chalta hai (dev server/watcher) aur process id milta hai;
       phir `process_logs`/`process_stop` use karo.
-    • Risky commands (delete/kill/install/git push) ke liye pehle owner ki permission lo,
-      phir `confirmed=True` bhejo (approval mode: JARVIS_EXEC_APPROVAL=off|risky|all).
+    • Dangerous commands (recursive delete, disk ops, force-push, kill, ...) par owner se
+      approval maangi jaati hai (Dangerous-Command Gate, JARVIS_EXEC_APPROVAL=off|risky|all).
+      Model khud approve NAHI kar sakta — approval sirf human deta hai (CLI/Telegram/voice/web).
     • Passwords/keys: command me ${SECRET_github_token} likho — asli value safely inject hoti hai
       aur output me redact ho jaati hai.
     """
     if not SAFETY_ALLOW_SHELL:
         return "🚫 run_shell_command disabled hai (JARVIS_ALLOW_SHELL=0)."
 
-    bad = _is_dangerous(command)
-    if bad:
-        return (f"🚫 Blocked: '{bad}' jaisa destructive pattern mila. "
-                f"Ye kabhi allow nahi hota (chahe confirmed=True ho).")
+    # Dangerous-Command Gate — human-only approval (model-visible koi bypass nahi)
+    from ..security.gate import check_shell
 
-    risky = _is_risky(command)
-    mode = EXEC_APPROVAL
-    from ..memory.session_state import get_state
-
-    if mode == "all" and not confirmed:
-        # har command ke liye owner ka explicit "haan"
-        return (f"🔐 Approval chahiye: `{command[:120]}`"
-                + (f" (risky pattern: `{risky.strip()}`)" if risky else "")
-                + "\nOwner se 'haan' lo, phir dobara call karo `confirmed=true` ke saath. "
-                  "(JARVIS_EXEC_APPROVAL=off karke ise band kar sakte ho.)")
-    if risky and mode == "risky":
-        # PEHLE sirf `not confirmed` par gate lagta tha — matlab LLM khud `confirmed=true`
-        # bhej kar gate bypass kar sakta tha (self-approval). Ab do cheezein chahiye:
-        #   1) owner ka fresh "haan" (grant_exec_approval se, 5 min TTL) aur
-        #   2) `confirmed=true` (ek hi command ke liye — use hote hi token consume).
-        granted = get_state().get("exec_approval_granted", {}) or {}
-        if not _approval_fresh(granted):
-            return (
-                f"🔐 Ye command risky hai: `{command[:160]}`\n"
-                f"Confirm karne ke liye owner se poocho: \"kar do\". Jab owner haan bole, tab "
-                f"`grant_exec_approval` chalao aur phir `confirmed=true` ke saath dobara try karo."
-            )
-        if not confirmed:
-            return (f"🔐 Owner ka approval mil gaya hai, par `confirmed=true` chahiye: `{command[:120]}`")
-        _consume_approval()  # ek approval = ek command
+    gate = await asyncio.to_thread(check_shell, command, cwd or "")
+    if not gate.allowed:
+        return gate.message
 
     work_dir = Path(cwd).expanduser() if cwd else WORKSPACE_DIR
     if not work_dir.exists():
@@ -668,18 +616,6 @@ async def run_shell_command(
 
 
 @tool
-async def grant_exec_approval() -> str:
-    """Owner ne risky command ke liye 'haan' bola ho to ye call karo — agle `confirmed=true` call allow ho jayegi."""
-    from ..memory.session_state import get_state
-
-    granted = get_state().get("exec_approval_granted", {}) or {}
-    granted[EXEC_APPROVAL_TOKEN] = {"at": time.time(), "ttl_s": APPROVAL_TTL_S}
-    get_state().set("exec_approval_granted", granted)
-    mins = int(APPROVAL_TTL_S // 60)
-    return (f"✅ Approval granted — {mins} minute ke andar ek risky command "
-            f"`confirmed=true` ke saath chal jaayegi (ek hi baar).")
-
-@tool
 async def system_info() -> str:
     """Machine ki info: OS, python, CPU cores, disk, workspace path."""
     import shutil as _sh
@@ -715,7 +651,6 @@ SYSTEM_TOOLS = [
     control_volume,
     take_screenshot,
     run_shell_command,
-    grant_exec_approval,
     system_info,
     *PROCESS_TOOLS,
 ]

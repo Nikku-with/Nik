@@ -257,47 +257,47 @@ def t_restart_safety() -> None:
 
 
 async def t_exec_approval_security() -> None:
-    """Risky shell commands: owner ke fresh "haan" ke bina kabhi na chalein.
+    """Dangerous-Command Gate: model kabhi approve nahi kar sakta, sirf human.
 
-    Do real bugs the (is session me pakde):
-      1. `confirmed=true` akela gate bypass kar deta tha (LLM self-approve kar leta tha).
-      2. ek baar ka grant `jarvis_memory.json` me hamesha ke liye pada rehta tha.
+    Purana token/confirmed system hata diya — ab `jarvis/security/gate.py` broker
+    har dangerous command par originating surface se poochta hai (60s timeout).
     """
-    import jarvis.config.settings as _S
-    from jarvis.memory.session_state import get_state
-    from jarvis.tools.system_tools import grant_exec_approval, run_shell_command
+    from jarvis.security.gate import gate_context
+    from jarvis.tools import tool_names
+    from jarvis.tools.system_tools import run_shell_command
 
-    old_mode = _S.EXEC_APPROVAL
-    _S.EXEC_APPROVAL = "risky"
-    import jarvis.tools.system_tools as _st
-
-    _st.EXEC_APPROVAL = "risky"
-    get_state().set("exec_approval_granted", {})
+    _no = lambda req: "no"  # noqa: E731
+    _yes = lambda req: "yes"  # noqa: E731
     cmd = {"command": "rm -rf ./__jarvis_approval_probe__"}
 
-    r1 = await run_shell_command.ainvoke(dict(cmd))
-    check("approval: risky bina approval block hota hai", "🔐" in r1)
-    r2 = await run_shell_command.ainvoke({**cmd, "confirmed": True})
-    check("approval: self-confirm (LLM apne aap) se bypass NAHI hota", "🔐" in r2)
-    await grant_exec_approval.ainvoke({})
-    r3 = await run_shell_command.ainvoke(dict(cmd))
-    check("approval: grant ke baad bhi confirmed chahiye", "confirmed=true" in r3)
-    r4 = await run_shell_command.ainvoke({**cmd, "confirmed": True})
-    check("approval: fresh grant + confirmed = chalta hai", "$ rm" in r4 or "exit" in r4, r4[:40])
-    r5 = await run_shell_command.ainvoke({**cmd, "confirmed": True})
-    check("approval: ek grant sirf ek command ke liye (one-shot)", "🔐" in r5)
+    check("approval: grant tool registry me nahi hai", "grant_exec_approval" not in tool_names())
+    schema = run_shell_command.args_schema.model_json_schema().get("properties", {})
+    check("approval: confirmed arg schema me nahi hai", "confirmed" not in schema)
+
+    with gate_context("cli", asker=_no):
+        r1 = await run_shell_command.ainvoke(dict(cmd))
+    check("approval: dangerous bina approval cancel hota hai", "Cancel" in r1 and "🔐" in r1)
+    with gate_context("cli", asker=_no):
+        r2 = await run_shell_command.ainvoke({**cmd, "confirmed": True})
+    check("approval: self-confirm (LLM apne aap) se bypass NAHI hota", "Cancel" in r2 and "🔐" in r2)
+    with gate_context("cli", asker=_yes):
+        r4 = await run_shell_command.ainvoke(dict(cmd))
+    check("approval: human yes par chalta hai", "[exit 0]" in r4, r4[:40])
     r6 = await run_shell_command.ainvoke({"command": "echo safe-ok"})
     check("approval: safe command bina gate chalta hai", "safe-ok" in r6)
-    r7 = await run_shell_command.ainvoke({"command": "rm -rf /", "confirmed": True})
-    check("approval: catastrophic command hamesha blocked", "Blocked" in r7)
-    # stale bool grant (purane format) bharosemand nahi hai
-    get_state().set("exec_approval_granted", {"haan-karo": True})
-    r8 = await run_shell_command.ainvoke({**cmd, "confirmed": True})
-    check("approval: purana bool grant expire maana jata hai", "🔐" in r8)
-    get_state().set("exec_approval_granted", {})
-    _st.EXEC_APPROVAL = old_mode
-    _S.EXEC_APPROVAL = old_mode
+    with gate_context("cli", asker=_no):
+        r7 = await run_shell_command.ainvoke({"command": "rm -rf /"})
+    check("approval: catastrophic command deny par cancel", "Cancel" in r7 and "🔐" in r7)
+    asked: list[str] = []
 
+    def _ask_twice(req):
+        asked.append(req.command)
+        return "yes"
+
+    with gate_context("cli", asker=_ask_twice):
+        await run_shell_command.ainvoke({"command": "rm -rf ./__jarvis_probe_a__"})
+        await run_shell_command.ainvoke({"command": "rm -rf ./__jarvis_probe_b__"})
+    check("approval: har dangerous command par naya sawaal (no reuse)", len(asked) == 2, str(asked))
 
 def t_settings_surface() -> None:
     from jarvis.config import runtime as R

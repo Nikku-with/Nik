@@ -88,6 +88,70 @@ def slugify(task: str, maxlen: int = 40) -> str:
     return (s[:maxlen] or "script") + "_" + time.strftime("%H%M%S")
 
 
+
+
+# ---------------------------------------------------------------------------
+# shell-out gate — generated code jo shell me ghus raha hai wo Gate se guzarta hai
+# ---------------------------------------------------------------------------
+def shell_outs_in_code(code: str) -> list[tuple[str, str]]:
+    """Generated code me shell-outs dhoondho: os.system/popen, shell=True, rmtree."""
+    import re as _re
+
+    outs: list[tuple[str, str]] = []
+    for pat, kind in ((r"os\.system\(\s*[\"'](.*?)[\"']\s*\)", "os.system"),
+                      (r"os\.popen\(\s*[\"'](.*?)[\"']\s*\)", "os.popen"),
+                      (r"subprocess\.\w+\(\s*[\"'](.*?)[\"']\s*[,)]", "subprocess")):
+        try:
+            for m in _re.findall(pat, code or "", flags=_re.S):
+                if m and m.strip():
+                    outs.append((kind, m.strip()[:400]))
+        except Exception:
+            pass
+    if _re.search(r"shutil\.rmtree\s*\(", code or ""):
+        outs.append(("shutil.rmtree", "shutil.rmtree(...) in generated code"))
+    if _re.search(r"shell\s*=\s*True", code or ""):
+        outs.append(("shell=True", "subprocess shell=True in generated code"))
+    # dedupe, order rakho
+    seen: set[str] = set()
+    uniq: list[tuple[str, str]] = []
+    for kind, cmd in outs:
+        key = f"{kind}:{cmd}"
+        if key not in seen:
+            seen.add(key)
+            uniq.append((kind, cmd))
+    return uniq
+
+
+async def gate_code_shellouts(code: str, where: str) -> str | None:
+    """Shell-outs ko Gate se guzaro. Returns deny-message ya None (allowed)."""
+    outs = shell_outs_in_code(code)
+    if not outs:
+        return None
+    from ..security.gate import check_action, check_shell, classify_shell, effective_mode
+
+    mode = effective_mode()
+    for kind, cmd in outs:
+        if kind == "shutil.rmtree":
+            gate = await __import__("asyncio").to_thread(
+                check_action, "delete", f"{where}: shutil.rmtree (tree delete)")
+            if not gate.allowed:
+                return gate.message
+            continue
+        if kind == "shell=True":
+            gate = await __import__("asyncio").to_thread(
+                check_action, "run_tool", f"{where}: subprocess shell=True")
+            if not gate.allowed:
+                return gate.message
+            continue
+        decision = classify_shell(cmd)
+        if decision.dangerous or mode == "all":
+            gate = await __import__("asyncio").to_thread(
+                check_shell, cmd, "", None, 60)
+            if not gate.allowed:
+                return gate.message + "\n(code shell-out blocked: `" + cmd[:120] + "`)"
+    return None
+
+
 # ---------------------------------------------------------------------------
 # execution
 # ---------------------------------------------------------------------------
@@ -258,6 +322,13 @@ async def code_engine_run(
             code = await generate_code(task, language, feedback=feedback, previous=code)
             continue
 
+        # Gate: generated code ke shell-outs (os.system/rmtree/...) par human approval
+        denied = await gate_code_shellouts(code, f"code_engine:{script_path.name}")
+        if denied:
+            return {"ok": False, "script": str(script_path), "attempts": attempt,
+                    "report": denied, "artifacts": [], "stdout": "", "code": code,
+                    "history": history}
+
         script_path.parent.mkdir(parents=True, exist_ok=True)
         script_path.write_text(code, encoding="utf-8")
         try:
@@ -331,6 +402,9 @@ async def run_python(code: str, timeout: int = 60) -> str:
     ok, msg = static_check(code, "python")
     if not ok:
         return f"🚫 Blocked: {msg}"
+    denied = await gate_code_shellouts(code, "run_python")
+    if denied:
+        return denied
     tmp = SCRIPTS_DIR / f"snippet_{time.strftime('%H%M%S')}.py"
     tmp.parent.mkdir(parents=True, exist_ok=True)
     tmp.write_text(code, encoding="utf-8")
@@ -354,6 +428,13 @@ async def run_script_file(path: str, script_args: list[str] | None = None) -> st
         if not matches:
             return f"❌ Script nahi mili: {path}"
         p = matches[0]
+    try:
+        denied = await gate_code_shellouts(p.read_text(encoding="utf-8", errors="ignore")[:20000],
+                                            f"run_script_file:{p.name}")
+    except Exception:
+        denied = None
+    if denied:
+        return denied
     res = await run_script(p, args=script_args)
     return f"▶️ {p.name}\n{res.render()}"
 

@@ -310,12 +310,22 @@ def tool_groups() -> dict[str, list[str]]:
 
 
 async def run_tool_async(name: str, args: dict[str, Any]) -> str:
+    """CLI /run — tool seedha chalao, Gate ke saath (surface: cli)."""
+    import asyncio as _aio
+
+    from ..security.gate import check_action, effective_mode, gate_context
     from ..tools import ALL_TOOLS
 
     tool = next((t for t in ALL_TOOLS if getattr(t, "name", "") == name), None)
     if tool is None:
         return f"❌ tool '{name}' nahi mila"
-    out = await tool.ainvoke(args)
+    with gate_context("cli"):
+        # mode=all me har /run par approval (run_shell_command ka apna gate hai — double prompt nahi)
+        if name != "run_shell_command" and effective_mode() == "all":
+            gate = await _aio.to_thread(check_action, "run_tool", f"/run {name} {args}")
+            if not gate.allowed:
+                return gate.message
+        out = await tool.ainvoke(args)
     return str(out)
 
 
