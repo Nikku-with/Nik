@@ -117,7 +117,7 @@ def build_livekit_agent_runner(args: list[str] | None = None):
             "LiveKit agents installed nahi hain. Chalao:\n"
             '  pip install "livekit-agents[google]" livekit-plugins-google livekit-plugins-silero\n'
             f"(detail: {exc})"
-        )
+        ) from exc
 
     @function_tool
     async def current_time(context: RunContext) -> str:
@@ -261,6 +261,14 @@ def create_agent_session():
     cfg = session_config()
     vad = silero.VAD.load()
     llm = realtime.RealtimeModel(model=cfg["model"], voice=cfg["voice"], api_key=S.GEMINI_API_KEY or None)
+    import asyncio
+
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        # AgentSession ko current loop chahiye; asyncio.run() ke baad koi set
+        # loop nahi rehta (test-order/sync-CLI flake) — ek fresh loop set karo.
+        asyncio.set_event_loop(asyncio.new_event_loop())
     return agents.AgentSession(vad=vad, llm=llm, turn_handling=cfg["turn_handling"])
 
 

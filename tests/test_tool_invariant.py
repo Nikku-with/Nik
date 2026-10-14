@@ -170,7 +170,11 @@ def tool_stub(x: str = "") -> str:
 # ---------------------------------------------------------------------------
 # TEST 4
 # ---------------------------------------------------------------------------
-async def test_4_desktop_action_requires_real_execution() -> None:
+def test_4_desktop_action_requires_real_execution() -> None:
+    asyncio.run(_test_4_desktop_action_requires_real_execution_impl())
+
+
+async def _test_4_desktop_action_requires_real_execution_impl() -> None:
     print("\n[TEST 4] 'notepad open krke hello likho' → asli execution + evidence; LLM-only success invalid")
     import jarvis.graph.nodes as N
     from jarvis.graph.nodes import SubAgentRun, desktop_worker, honesty_guard
@@ -240,7 +244,11 @@ async def test_4_desktop_action_requires_real_execution() -> None:
 # ---------------------------------------------------------------------------
 # TEST 5
 # ---------------------------------------------------------------------------
-async def test_5_plain_question_needs_no_tool() -> None:
+def test_5_plain_question_needs_no_tool() -> None:
+    asyncio.run(_test_5_plain_question_needs_no_tool_impl())
+
+
+async def _test_5_plain_question_needs_no_tool_impl() -> None:
     print("\n[TEST 5] 'hello' → normal jawab, tool call ki zaroorat nahi")
     from jarvis.runtime.agent import run_agent
 
@@ -258,7 +266,11 @@ async def test_5_plain_question_needs_no_tool() -> None:
 # ---------------------------------------------------------------------------
 # TEST 6
 # ---------------------------------------------------------------------------
-async def test_6_tool_failure_no_success_claim() -> None:
+def test_6_tool_failure_no_success_claim() -> None:
+    asyncio.run(_test_6_tool_failure_no_success_claim_impl())
+
+
+async def _test_6_tool_failure_no_success_claim_impl() -> None:
     print("\n[TEST 6] tool execution fail → final answer success claim NAHI karta")
     import jarvis.graph.nodes as N
     from jarvis.graph.nodes import SubAgentRun, desktop_worker, honesty_guard
@@ -351,8 +363,13 @@ def test_anti_regression_source() -> None:
 
 def test_evidence_helpers() -> None:
     print("\n[EVIDENCE] helpers sahi kaam karte hain")
-    from jarvis.runtime.evidence import (claims_execution, evidence_records,
-                                         has_verified_evidence, is_tool_required, verify_execution)
+    from jarvis.runtime.evidence import (
+        claims_execution,
+        evidence_records,
+        has_verified_evidence,
+        is_tool_required,
+        verify_execution,
+    )
 
     state = {"findings": [{"tool_calls": [{"name": "open_any_app", "output": "✅ khul gaya", "ok": True}]}]}
     check("evidence: findings[].tool_calls se records nikalte hain",
@@ -380,14 +397,9 @@ def main() -> int:
     test_2_second_model_used_when_first_fails()
     test_3_all_fail_is_hard_failure()
 
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        loop.run_until_complete(test_4_desktop_action_requires_real_execution())
-        loop.run_until_complete(test_5_plain_question_needs_no_tool())
-        loop.run_until_complete(test_6_tool_failure_no_success_claim())
-    finally:
-        loop.close()
+    test_4_desktop_action_requires_real_execution()
+    test_5_plain_question_needs_no_tool()
+    test_6_tool_failure_no_success_claim()
 
     test_anti_regression_source()
     test_evidence_helpers()
