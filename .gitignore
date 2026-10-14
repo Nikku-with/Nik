@@ -45,3 +45,4 @@ chrome-profile/
 .vscode/
 .DS_Store
 Thumbs.db
+*.zip
