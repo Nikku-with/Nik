@@ -1,0 +1,67 @@
+# ============================================================================
+#  NikhilAI — dependencies
+#  Install:  pip install -r requirements.txt
+#  Minimal (sirf core) chahiye to:  pip install -e .
+#  Sab extras ke saath:            pip install -r requirements.txt
+# ============================================================================
+
+# ---- agent core (LangChain + LangGraph) -----------------------------------
+langchain-core>=0.3
+langchain>=0.3
+langgraph>=0.2
+langchain-openai>=0.2          # OpenRouter + Groq + OpenAI + xAI (sab OpenAI-compatible)
+pydantic>=2.6
+pydantic-settings>=2.2
+python-dotenv>=1.0
+
+# ---- brain providers -------------------------------------------------------
+langchain-google-genai>=2.0    # Gemini (default brain) + Gemini Live
+# langchain-anthropic>=0.3     # optional — browser-use ke anthropic pin se conflict kar sakta hai
+# langchain-ollama>=0.2        # optional — local models
+
+# ---- web / research --------------------------------------------------------
+httpx>=0.27
+requests>=2.31
+beautifulsoup4>=4.12
+lxml>=5.0
+ddgs>=9.0                      # keyless multi-engine search (DDG/Bing/Brave/mojeek…)
+
+# ---- file intelligence (kisi bhi file ko padhna) ---------------------------
+pypdf>=5.0                     # PDF
+python-docx>=1.1               # Word
+openpyxl>=3.1                  # Excel
+python-pptx>=1.0               # PowerPoint (optional)
+Pillow>=10.0                   # image metadata
+rapidfuzz>=3.9                 # fuzzy file/app matching
+
+# ---- terminal UI -----------------------------------------------------------
+rich>=13.7
+
+# ---- browser automation ----------------------------------------------------
+browser-use>=0.5               # python API + `browser-use` CLI harness
+
+# ---- reasoning optimiser ---------------------------------------------------
+dspy>=3.0
+
+# ---- voice (LiveKit + Gemini Live) -----------------------------------------
+livekit-agents[google]>=1.0
+livekit-plugins-google>=1.0
+livekit-plugins-silero>=1.0
+
+# ---- Telegram bot ----------------------------------------------------------
+python-telegram-bot>=21.0
+
+# ---- HTTP API + web console ------------------------------------------------
+fastapi>=0.110
+uvicorn[standard]>=0.30
+
+# ---- dev (optional) --------------------------------------------------------
+# pytest>=8.0
+# ruff>=0.6
+
+# NOTE version conflicts ke baare me:
+#   browser-use kuch packages ko exact pin karta hai (openai / groq / google-genai / anthropic).
+#   Isliye Groq aur OpenRouter hum `langchain-openai` ke through chalate hain (same API),
+#   aur `langchain-groq` ki zaroorat nahi. Gemini ke liye `langchain-google-genai` use hota hai.
+#   Agar pip "dependency conflicts" warning de par import kaam kare — chalega (browser-use apne
+#   pinned versions maangta hai, hum compatible ranges use karte hain).
