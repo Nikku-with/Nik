@@ -165,6 +165,11 @@ def record_app_launch(title: str) -> None:
         cutoff = time.time() - _LAUNCH_TTL_S
         launched = {k: v for k, v in launched.items() if float(v or 0) >= cutoff}
         get_state().set("launched_apps", launched)
+        # app-launcher memory: recents + usage stats bhi update (planner hint banta hai)
+        try:
+            get_state().note_app_opened(str(title or "").strip())
+        except Exception:
+            pass
     except Exception:
         pass
 
@@ -415,7 +420,16 @@ async def open_app(app_title: str) -> str:
     """
     target = _resolve_app(app_title)
     if not target:
-        return f"❌ '{app_title}' ko main launch nahi kar paya — app registry ya PATH me nahi hai. APP_REGISTRY me add kar sakte hain."
+        hint = ""
+        try:
+            from ..memory.session_state import get_state
+
+            hint = get_state().recent_apps_hint()
+        except Exception:
+            pass
+        msg = (f"❌ '{app_title}' ko main launch nahi kar paya — app registry ya PATH me nahi hai. "
+               "APP_REGISTRY me add kar sakte hain.")
+        return msg + (f"\n💡 {hint}" if hint else "")
     ok, detail = await _launch(target)
     if not ok:
         return f"❌ {app_title} launch fail: {detail}"

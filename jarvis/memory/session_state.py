@@ -15,6 +15,7 @@ JSON me kya rehta hai:
   last_error, open_apps, recent_files, pending_steps, repl variables summary,
   preferences (owner ki style), counters (loop-prevention ke liye)
 """
+
 from __future__ import annotations
 
 import json
@@ -63,8 +64,7 @@ class SessionState:
     def save(self) -> None:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.path.write_text(json.dumps(self.data, indent=2, ensure_ascii=False, default=str),
-                                 encoding="utf-8")
+            self.path.write_text(json.dumps(self.data, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
         except Exception:
             pass
 
@@ -81,25 +81,38 @@ class SessionState:
         self.data["cwd"] = str(path)
         self.save()
 
-    def add_task(self, goal: str, workers: list[str] | None = None, status: str = "running",
-                 result: str = "", artifacts: list[str] | None = None) -> None:
-        self.data.setdefault("task_history", []).append({
-            "goal": (goal or "")[:300],
-            "workers": workers or [],
-            "status": status,
-            "result": (result or "")[:400],
-            "artifacts": (artifacts or [])[:8],
-            "at": time.strftime("%Y-%m-%d %H:%M:%S"),
-        })
+    def add_task(
+        self,
+        goal: str,
+        workers: list[str] | None = None,
+        status: str = "running",
+        result: str = "",
+        artifacts: list[str] | None = None,
+    ) -> None:
+        self.data.setdefault("task_history", []).append(
+            {
+                "goal": (goal or "")[:300],
+                "workers": workers or [],
+                "status": status,
+                "result": (result or "")[:400],
+                "artifacts": (artifacts or [])[:8],
+                "at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            }
+        )
         self.data["task_history"] = self.data["task_history"][-MAX_HISTORY:]
         self.save()
 
     def finish_task(self, status: str = "done", result: str = "", artifacts: list[str] | None = None) -> None:
         hist = self.data.get("task_history") or []
         if hist:
-            hist[-1].update({"status": status, "result": (result or "")[:400],
-                             "artifacts": (artifacts or [])[:8],
-                             "finished_at": time.strftime("%Y-%m-%d %H:%M:%S")})
+            hist[-1].update(
+                {
+                    "status": status,
+                    "result": (result or "")[:400],
+                    "artifacts": (artifacts or [])[:8],
+                    "finished_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                }
+            )
             self.save()
 
     def remember_error(self, error: str) -> None:
@@ -107,10 +120,40 @@ class SessionState:
         self.save()
 
     def note_app_opened(self, app: str) -> None:
-        apps = [a for a in (self.data.get("open_apps") or []) if a.get("app") != app]
-        apps.append({"app": app, "at": time.strftime("%H:%M:%S")})
+        """App-launcher memory: recents + per-app usage stats (count/last)."""
+        name = (app or "").strip()
+        if not name:
+            return
+        apps = [a for a in (self.data.get("open_apps") or []) if a.get("app") != name]
+        apps.append({"app": name, "at": time.strftime("%H:%M:%S")})
         self.data["open_apps"] = apps[-10:]
+        usage = self.data.get("app_usage") or {}
+        key = name.lower()
+        prev = usage.get(key) or {}
+        usage[key] = {"name": name, "count": int(prev.get("count", 0)) + 1, "last": time.strftime("%Y-%m-%d %H:%M:%S")}
+        self.data["app_usage"] = usage
         self.save()
+
+    def recent_apps(self, n: int = 5) -> list[str]:
+        """Haal me khole apps (naya pehle)."""
+        apps = [a.get("app", "") for a in (self.data.get("open_apps") or []) if a.get("app")]
+        return list(reversed(apps[-max(1, n) :]))
+
+    def most_used_apps(self, n: int = 5) -> list[tuple[str, int]]:
+        """Sabse zyada khole apps [(name, count)]."""
+        usage = self.data.get("app_usage") or {}
+        ranked = sorted(
+            ((v.get("name", k), int(v.get("count", 0))) for k, v in usage.items() if isinstance(v, dict)),
+            key=lambda t: (-t[1], t[0].lower()),
+        )
+        return ranked[: max(1, n)]
+
+    def recent_apps_hint(self) -> str:
+        """Failure messages ke liye ek-line hint (khali ho to '')."""
+        recent = self.recent_apps(3)
+        if not recent:
+            return ""
+        return "Haal me khole apps: " + ", ".join(recent)
 
     def note_file_touched(self, path: str) -> None:
         files = [f for f in (self.data.get("recent_files") or []) if f.get("path") != path]
@@ -165,7 +208,9 @@ class SessionState:
         if tasks:
             lines.append("Recent tasks:")
             for t in tasks:
-                lines.append(f"  - [{t.get('status')}] {t.get('goal', '')[:120]} (workers: {', '.join(t.get('workers') or [])})")
+                lines.append(
+                    f"  - [{t.get('status')}] {t.get('goal', '')[:120]} (workers: {', '.join(t.get('workers') or [])})"
+                )
         if d.get("preferences"):
             lines.append("Owner preferences: " + json.dumps(d["preferences"], ensure_ascii=False))
         return "\n".join(lines)

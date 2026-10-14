@@ -21,6 +21,7 @@ Launch (OpenClaw ke open-path se seekha hua):
   * Linux  : `gtk-launch <desktop-id>` → `xdg-open` fallback
   * Detached + unref — app gateway/bot band hone par bhi chalti rahe
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -118,9 +119,16 @@ def _index_windows(apps: list[dict]) -> None:
     # Store apps (Get-StartApps) — best-effort, PowerShell se
     try:
         out = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
-             "Get-StartApps | Select-Object -Property Name,AppID | ConvertTo-Json -Compress"],
-            capture_output=True, text=True, timeout=25,
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Get-StartApps | Select-Object -Property Name,AppID | ConvertTo-Json -Compress",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=25,
         )
         if out.returncode == 0 and out.stdout.strip():
             data = json.loads(out.stdout)
@@ -131,8 +139,20 @@ def _index_windows(apps: list[dict]) -> None:
         pass
 
     # common executables on PATH
-    for exe in ("notepad.exe", "calc.exe", "mspaint.exe", "cmd.exe", "wt.exe", "explorer.exe",
-                "code.cmd", "chrome.exe", "msedge.exe", "firefox.exe", "vlc.exe", "spotify.exe"):
+    for exe in (
+        "notepad.exe",
+        "calc.exe",
+        "mspaint.exe",
+        "cmd.exe",
+        "wt.exe",
+        "explorer.exe",
+        "code.cmd",
+        "chrome.exe",
+        "msedge.exe",
+        "firefox.exe",
+        "vlc.exe",
+        "spotify.exe",
+    ):
         found = shutil.which(exe)
         if found:
             _add(apps, Path(exe).stem, found, "path")
@@ -152,8 +172,12 @@ def _index_macos(apps: list[dict]) -> None:
         except Exception:
             continue
     try:
-        out = subprocess.run(["mdfind", "kMDItemContentType == 'com.apple.application-bundle'"],
-                             capture_output=True, text=True, timeout=20)
+        out = subprocess.run(
+            ["mdfind", "kMDItemContentType == 'com.apple.application-bundle'"],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
         for line in (out.stdout or "").splitlines():
             p = Path(line)
             if p.suffix == ".app":
@@ -243,12 +267,12 @@ def _score_against(q: str, candidates) -> float:
         # pehle "run chrome".startswith("r") = 92% jaisa fake score aata tha.
         if len(c) >= 3 and (c.startswith(q) or q.startswith(c)):
             best = max(best, 92.0)
-        elif q in words:                     # "chrome" == ek poora word of "google chrome"
+        elif q in words:  # "chrome" == ek poora word of "google chrome"
             best = max(best, 90.0)
         elif len(c) >= 3 and (q in c or c in q):
             best = max(best, 85.0)
         elif len(q) >= 3 and any(w.startswith(q) or q.startswith(w) for w in words):
-            best = max(best, 88.0)           # "notep" → "notepad"
+            best = max(best, 88.0)  # "notep" → "notepad"
         best = max(best, _ratio(q, c) * 85)
     return best
 
@@ -282,7 +306,7 @@ def _similarity(query: str, app: dict) -> float:
         for target in targets:
             alias_score = max(alias_score, _score_against(_norm(target), own))
     if alias_score:
-        best = max(best, alias_score * 0.9)                 # indirect match → thoda discount
+        best = max(best, alias_score * 0.9)  # indirect match → thoda discount
     return min(best, 100.0)
 
 
@@ -300,7 +324,7 @@ def _ratio(a: str, b: str) -> float:
         except Exception:
             import difflib
 
-            return difflib.SequenceMatcher(None, a, b).ratio()   # pehle se 0..1
+            return difflib.SequenceMatcher(None, a, b).ratio()  # pehle se 0..1
 
 
 def find_apps(query: str, limit: int = 8) -> list[dict]:
@@ -334,11 +358,11 @@ def _spawn_detached(argv: list[str], via_shell: bool = False) -> tuple[bool, str
     """App ko detached launch karo — gateway band hone par bhi app chalti rahe."""
     try:
         if via_shell:
-            proc = subprocess.Popen(argv, shell=True, stdout=subprocess.DEVNULL,
-                                    stderr=subprocess.DEVNULL, start_new_session=True)
+            proc = subprocess.Popen(
+                argv, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True
+            )
         else:
-            proc = subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                    start_new_session=True)
+            proc = subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
         try:
             proc.unref  # type: ignore[attr-defined]
         except Exception:
@@ -400,13 +424,15 @@ async def focus_window(title_keyword: str) -> bool:
                 return False
         elif IS_MAC:
             script = f'tell application "System Events" to set frontmost of (first process whose name contains "{title_keyword}") to true'
-            proc = await asyncio.create_subprocess_exec("osascript", "-e", script,
-                                                        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+            proc = await asyncio.create_subprocess_exec(
+                "osascript", "-e", script, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
+            )
             await proc.communicate()
             return proc.returncode == 0
         elif IS_LINUX and shutil.which("wmctrl"):
-            proc = await asyncio.create_subprocess_exec("wmctrl", "-a", kw,
-                                                        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+            proc = await asyncio.create_subprocess_exec(
+                "wmctrl", "-a", kw, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
+            )
             await proc.communicate()
             return proc.returncode == 0
     except Exception:
@@ -426,9 +452,11 @@ async def find_apps_tool(query: str, limit: int = 8) -> str:
     """
     results = await asyncio.to_thread(find_apps, query, limit)
     if not results:
-        return (f"❌ '{query}' naam ka koi app installed nahi mila.\n"
-                "Tip: `python -c \"from jarvis.tools.app_finder import build_app_index as b; print(len(b(True)))\"` "
-                "se index refresh kar sakte ho.")
+        return (
+            f"❌ '{query}' naam ka koi app installed nahi mila.\n"
+            'Tip: `python -c "from jarvis.tools.app_finder import build_app_index as b; print(len(b(True)))"` '
+            "se index refresh kar sakte ho."
+        )
     lines = [f"🔍 '{query}' ke closest apps:"]
     for i, a in enumerate(results, 1):
         lines.append(f"{i}. {a['name']}  ({a['kind']}, match {a['score']}%)")
@@ -448,11 +476,19 @@ async def open_any_app(query: str, refresh: bool = False) -> str:
         await asyncio.to_thread(build_app_index, True)
         results = await asyncio.to_thread(find_apps, query, 5)
     if not results:
-        return (
+        hint = ""
+        try:
+            from ..memory.session_state import get_state
+
+            hint = get_state().recent_apps_hint()
+        except Exception:
+            pass
+        msg = (
             f"❌ '{query}' ka app nahi mila. Maine poora index check kiya.\n"
             "• Exact naam bolo (jaisa Start Menu / Applications me hai)\n"
             "• Ya `run_shell_command` se direct command chalao"
         )
+        return msg + (f"\n💡 {hint}" if hint else "")
 
     best = results[0]
     # Weak match par GALAT app kholna sabse bura outcome hai (user bola "chrome", hum ne
@@ -464,13 +500,16 @@ async def open_any_app(query: str, refresh: bool = False) -> str:
             f"🤔 '{query}' ka exact app nahi mila (best guess: {best['name']} — {best['score']}% match).\n"
             f"Galat app kholna theek nahi, isliye maine launch NAHI kiya.\n"
             f"Candidates:\n{alts}\n"
-            f"• Confirm karo to bolo: \"{best['name']} kholo\"\n"
+            f'• Confirm karo to bolo: "{best["name"]} kholo"\n'
             f"• Ya `find_apps_tool` se poora list dekho"
         )
     ok, detail = await asyncio.to_thread(launch_app, best)
     if not ok:
         return f"❌ {best['name']} launch nahi hua: {detail}"
 
+    from .system_tools import record_app_launch
+
+    record_app_launch(best["name"])  # ownership (Gate) + launcher memory
     await asyncio.sleep(1.5)
     focused = await focus_window(best["name"])
     others = ", ".join(a["name"] for a in results[1:4])
