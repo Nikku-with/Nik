@@ -18,13 +18,14 @@ Chalane ke liye:
 
 CLI (LiveKit Cloud deploy) bhi support hai: `lk cloud auth && lk agent init i-agent`
 """
-from __future__ import annotations
-import sys
 
+from __future__ import annotations
+
+import sys
 from typing import Any
 
-from ..config import settings as S
 from ..config import runtime as R
+from ..config import settings as S
 from ..runtime.agent import run_agent
 from ..voice.speech import for_speech, summary_for_speech
 
@@ -35,10 +36,24 @@ SESSION = "voice"
 # graph bridge — voice tools isi ko call karte hain
 # ---------------------------------------------------------------------------
 async def run_nikhilai(query: str, session_id: str = SESSION, spoken: bool = True) -> dict[str, Any]:
-    """Voice se aayi request → LangGraph → {answer, spoken}."""
-    result = await run_agent(query, session_id=session_id, surface="voice_owner", voice_output=spoken)
+    """Voice se aayi request → LangGraph → {answer, spoken}.
+
+    Dangerous steps par voice asker poochta hai (Telegram bridge, warna deny) —
+    `gate_context` yahin wrap hota hai taaki har voice tool call cover ho.
+    """
+    from ..security.gate import gate_context
+
+    with gate_context("voice_owner", asker=make_voice_asker()):
+        result = await run_agent(query, session_id=session_id, surface="voice_owner", voice_output=spoken)
     # voice par chhota jawab natural lagta hai — 3 sentence se zyada mat bolo
     spoken_text = summary_for_speech(result.spoken or result.answer, max_sentences=3)
+    try:
+        from ..memory.session_state import get_state
+
+        get_state().data["voice_last_spoken"] = for_speech(spoken_text)
+        get_state().save()
+    except Exception:
+        pass
     return {
         "answer": result.answer,
         "spoken": for_speech(spoken_text),
@@ -74,7 +89,10 @@ Rule 3: Jawab CHHOTA aur bolne layak do (1-3 sentence). Emoji mat bolo, markdown
         consumer device use karegi, isliye sirf natural sentences.
 Rule 4: Lamba kaam (scraping, code, multi-site research) `agent_task` ko do aur bolo
         "kaam chal raha hai, result chat me bhej deta hoon" — mic par wait mat karao.
-Rule 5: Kuch na samajh aaye to ek chhota sa sawaal poocho, phir kaam karo."""
+Rule 5: Kuch na samajh aaye to ek chhota sa sawaal poocho, phir kaam karo.
+Rule 6: User beech me bole to TURANT ruko aur suno (barge-in) — apna sentence poora
+        karne ki zid mat karo. Dangerous kaam (delete/format/kill) voice par kabhi
+        khud approve mat karo — bolo "ye Telegram par bheja, wahan approve karo"."""
 
 
 # ---------------------------------------------------------------------------
@@ -93,7 +111,7 @@ def build_livekit_agent_runner(args: list[str] | None = None):
     """
     try:
         from livekit import agents
-        from livekit.agents import Agent, AgentSession, RunContext, function_tool
+        from livekit.agents import Agent, RunContext, function_tool
     except Exception as exc:  # pragma: no cover
         raise RuntimeError(
             "LiveKit agents installed nahi hain. Chalao:\n"
@@ -136,11 +154,18 @@ def build_livekit_agent_runner(args: list[str] | None = None):
         out = get_manager().forget(about)
         return out["message"]
 
-    async def entrypoint(ctx: "agents.JobContext") -> None:
+    @function_tool
+    async def repeat_last(context: RunContext) -> str:
+        """Aakhri jawab dobara bolo (user ne "phir se bolo" kaha ho)."""
+        prev = last_spoken()
+        return prev or "abhi kuch bola hi nahi — pehle kuch poochho"
+
+    async def entrypoint(ctx: agents.JobContext) -> None:
         await ctx.connect()
-        session = AgentSession()
-        agent = Agent(instructions=voice_instructions(),
-                      tools=[current_time, agent_task, remember, forget])
+        session = create_agent_session()
+        agent = Agent(
+            instructions=voice_instructions(), tools=[current_time, agent_task, remember, forget, repeat_last]
+        )
         await session.start(room=ctx.room, agent=agent)
 
         greeting = f"Namaste {R.get('owner_name', S.OWNER_NAME)}! {R.get('assistant_name', S.ASSISTANT_NAME)} online hai. Bataiye?"
@@ -159,13 +184,183 @@ def voice_model() -> str:
     return str(R.get("voice_model", S.REALTIME_MODEL))
 
 
+def voice_plugins() -> dict[str, bool]:
+    """Voice plugins installed hain ya nahi (silero VAD + google realtime)."""
+    out = {}
+    try:
+        from livekit.plugins import silero  # noqa: F401
+
+        out["silero"] = True
+    except Exception:
+        out["silero"] = False
+    try:
+        from livekit.plugins.google import realtime  # noqa: F401
+
+        out["google"] = True
+    except Exception:
+        out["google"] = False
+    return out
+
+
+def livekit_url_ok() -> tuple[bool, str]:
+    """LIVEKIT_URL format check — wss:// (cloud) ya ws:// (local dev)."""
+    url = (S.LIVEKIT_URL or "").strip()
+    if not url:
+        return False, "LIVEKIT_URL khaali hai"
+    if url.startswith("wss://"):
+        return True, "ok"
+    if url.startswith("ws://"):
+        return True, "ok (local/dev — production me wss:// use karo)"
+    if url.startswith("https://"):
+        return False, "LIVEKIT_URL me https:// nahi — wss:// chahiye (WebSocket, HTTP nahi)"
+    return False, "LIVEKIT_URL wss://... hona chahiye"
+
+
+def session_config() -> dict[str, Any]:
+    """Turn-taking + VAD config (livekit-agents 1.x TurnHandlingOptions shape).
+
+    * endpointing: user kab bolna band kare → 0.5s chuppi par turn khatam, 3s max wait
+    * interruption: user beech me bole → VAD par turant ruko (barge-in), false alarm
+      par apni baat resume karo
+    """
+    return {
+        "vad_provider": "silero",
+        "model": voice_model(),
+        "voice": str(R.get("voice_name", S.VOICE_NAME)),
+        "turn_handling": {
+            "endpointing": {"mode": "fixed", "min_delay": 0.5, "max_delay": 3.0},
+            "interruption": {
+                "enabled": True,
+                "mode": "vad",
+                "min_duration": 0.5,
+                "min_words": 0,
+                "resume_false_interruption": True,
+                "false_interruption_timeout": 1.5,
+            },
+        },
+    }
+
+
+def create_agent_session():
+    """Configured AgentSession: silero VAD + google realtime + turn-taking.
+
+    Raises RuntimeError with exact pip command agar plugin missing hai.
+    """
+    try:
+        from livekit import agents
+    except Exception as exc:
+        raise RuntimeError(f'livekit-agents installed nahi: pip install "livekit-agents[google]" (detail: {exc})') from exc
+    try:
+        from livekit.plugins import silero
+    except Exception as exc:
+        raise RuntimeError(f"VAD missing hai: pip install livekit-plugins-silero (detail: {exc})") from exc
+    try:
+        from livekit.plugins.google import realtime
+    except Exception as exc:
+        raise RuntimeError(f"Google realtime missing hai: pip install livekit-plugins-google (detail: {exc})") from exc
+    cfg = session_config()
+    vad = silero.VAD.load()
+    llm = realtime.RealtimeModel(model=cfg["model"], voice=cfg["voice"], api_key=S.GEMINI_API_KEY or None)
+    return agents.AgentSession(vad=vad, llm=llm, turn_handling=cfg["turn_handling"])
+
+
+def voice_approval_channel() -> str:
+    """ "telegram" agar owner ka Telegram configured hai (bridge), warna "none"."""
+    token = (S.TELEGRAM_BOT_TOKEN or "").strip()
+    owner = str(S.TELEGRAM_OWNER_ID or "").strip()
+    return "telegram" if (token and owner) else "none"
+
+
+def send_voice_approval_via_telegram(req) -> bool:
+    """Voice ka dangerous step → owner ke Telegram par Yes/No buttons.
+
+    Tap tabhi resolve hoga jab Telegram bot running ho (wahi `gate:` callbacks
+    handle karta hai) — bot band ho to timeout par auto-deny (fail closed).
+    """
+    import json
+    import urllib.request
+
+    token = (S.TELEGRAM_BOT_TOKEN or "").strip()
+    owner = str(S.TELEGRAM_OWNER_ID or "").strip()
+    cmd = req.command or req.kind or "?"
+    if len(cmd) > 250:
+        cmd = cmd[:250] + "…"
+    text = (
+        "🎙️🔐 Voice se dangerous kaam aaya — approval chahiye:\n"
+        f"Command: {cmd}\n"
+        f"Wajah: {req.why_flagged or 'dangerous'}\n"
+        f"(⏳ {req.timeout_s}s me jawab nahi to auto-cancel)"
+    )
+    payload = {
+        "chat_id": owner,
+        "text": text[:3500],
+        "reply_markup": {
+            "inline_keyboard": [
+                [
+                    {"text": "✅ Haan, chalao", "callback_data": f"gate:{req.id}:yes"},
+                    {"text": "🚫 Nahi", "callback_data": f"gate:{req.id}:no"},
+                ]
+            ]
+        },
+    }
+    data = json.dumps(payload).encode("utf-8")
+    http_req = urllib.request.Request(
+        f"https://api.telegram.org/bot{token}/sendMessage",
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(http_req, timeout=20) as resp:
+        return bool(json.loads(resp.read().decode("utf-8")).get("ok", False))
+
+
+def make_voice_asker():
+    """Voice surface asker: Telegram bridge par poochho, warna turant deny.
+
+    Mic par "haan/naa" sunna realtime talk-loop todta aur galat approve kara
+    sakta hai — isliye voice khud kabhi approve nahi karta.
+    """
+
+    def _ask(req) -> str:
+        if voice_approval_channel() != "telegram":
+            return "no"
+        from ..security.gate import get_broker
+
+        broker = get_broker()
+        try:
+            sent = send_voice_approval_via_telegram(req)
+        except Exception:
+            sent = False
+        if not sent:
+            return "no"
+        ev = broker._events.get(req.id)
+        if ev is not None:
+            ev.wait(timeout=req.timeout_s)
+            if req.status == "approved":
+                return "yes"
+        return "no"
+
+    return _ask
+
+
+def last_spoken() -> str:
+    """Aakhri bola hua jawab (repeat_last tool ke liye)."""
+    try:
+        from ..memory.session_state import get_state
+
+        return str(get_state().data.get("voice_last_spoken", "") or "")
+    except Exception:
+        return ""
+
+
 def voice_status() -> dict[str, Any]:
     """Voice ki readiness — doctor/CLI/Telegram ke liye."""
     lib = S.has_livekit()
-    keys = {"url": bool(S.LIVEKIT_URL), "api_key": bool(S.LIVEKIT_API_KEY),
-            "secret": bool(S.LIVEKIT_API_SECRET)}
+    keys = {"url": bool(S.LIVEKIT_URL), "api_key": bool(S.LIVEKIT_API_KEY), "secret": bool(S.LIVEKIT_API_SECRET)}
     gem = bool(S.GEMINI_API_KEY)
     ready = lib and all(keys.values()) and gem
+    url_ok, url_hint = livekit_url_ok()
+    plugins = voice_plugins()
     missing: list[str] = []
     if not lib:
         missing.append('pip install "livekit-agents[google]" livekit-plugins-google livekit-plugins-silero')
@@ -173,22 +368,43 @@ def voice_status() -> dict[str, Any]:
         missing.append("LIVEKIT_URL + LIVEKIT_API_KEY + LIVEKIT_API_SECRET (cloud.livekit.io → Settings → Keys)")
     if not gem:
         missing.append("GEMINI_API_KEY (realtime brain, aistudio.google.com/apikey)")
-    return {"ready": ready, "library": lib, "keys": keys, "gemini": gem, "model": voice_model(),
-            "voice": str(R.get("voice_name", S.VOICE_NAME)), "missing": missing}
+    if S.LIVEKIT_URL and not url_ok:
+        missing.append(f"LIVEKIT_URL format galat: {url_hint}")
+    return {
+        "ready": ready,
+        "library": lib,
+        "keys": keys,
+        "gemini": gem,
+        "model": voice_model(),
+        "voice": str(R.get("voice_name", S.VOICE_NAME)),
+        "missing": missing,
+        "plugins": plugins,
+        "url_ok": url_ok,
+        "url_hint": url_hint,
+        "approval_channel": voice_approval_channel(),
+    }
 
 
 def voice_status_text() -> str:
     st = voice_status()
+    plug = st.get("plugins", {})
+    vad_line = "✅ silero VAD" if plug.get("silero") else "❌ silero VAD (pip install livekit-plugins-silero)"
+    rt_line = "✅ google realtime" if plug.get("google") else "❌ google realtime (pip install livekit-plugins-google)"
     lines = [
         "🎙️ *Voice mode (LiveKit + Gemini Live)*",
         f"• Ready: {'✅ haan' if st['ready'] else '❌ abhi nahi'}",
         f"• voice: `{st['voice']}`  •  realtime model: `{st['model']}`",
+        f"• VAD/turn-taking: {vad_line}",
+        f"• Realtime brain: {rt_line}",
+        f"• Dangerous approvals: {'📲 Telegram buttons' if st.get('approval_channel') == 'telegram' else '🚫 voice par deny (Telegram set karo)'}",
     ]
     if st["missing"]:
         lines.append("• Chahiye:")
         lines += [f"   – {m}" for m in st["missing"]]
     else:
-        lines.append("• Chalane ke liye: `python -m jarvis voice console` (terminal test) ya `python -m jarvis voice dev`")
+        lines.append(
+            "• Chalane ke liye: `python -m jarvis voice console` (terminal test) ya `python -m jarvis voice dev`"
+        )
     return "\n".join(lines)
 
 
@@ -306,7 +522,6 @@ def cmd_test(query: str = "") -> int:
     """
     import time
 
-    from ..voice.speech import for_speech
 
     q = query or "aaj ki date batao aur ek chhota joke sunao"
     print("🎙️ Voice pipeline test (keys ki zaroorat nahi)")
@@ -368,8 +583,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if argv and str(argv[0]).startswith("-"):
-        argv = ["console", *argv]              # `voice --list-devices` → console ke options
-    mode = argv[0] if argv else "console"      # bina mode = console (menu option 2 bhi yahi hai)
+        argv = ["console", *argv]  # `voice --list-devices` → console ke options
+    mode = argv[0] if argv else "console"  # bina mode = console (menu option 2 bhi yahi hai)
     if mode not in VOICE_MODES:
         print(f"❌ '{mode}' voice ka mode nahi hai — ye chalte hain: {', '.join(VOICE_MODES)}")
         print(VOICE_HELP)
