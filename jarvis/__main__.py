@@ -22,6 +22,7 @@ Koi bhi baaki text = AI ke liye request (prefix ya keyword ki zaroorat nahi):
     python -m jarvis aaj ka mausam batao
 Close typo bhi chal jata hai ("consol" → console), aur galat samajhne par bataya jata hai.
 """
+
 from __future__ import annotations
 
 import os
@@ -39,13 +40,21 @@ def cmd_status() -> int:
     from .runtime.status import agent_status
 
     st = agent_status(compact=True)
-    ui.status_panel({
-        "status": "ONLINE" if not st["offline"] else "OFFLINE / DEMO",
-        "provider": st["provider"], "model": st["model"], "mode": st["mode"],
-        "memory": st["memory"], "tools": f"{st.get('tool_count', '?')} enabled",
-        "browser": st["browser"], "livekit": st["livekit"], "telegram": st["telegram"],
-        "automations": st["automations"], "workspace": st["workspace"],
-    })
+    ui.status_panel(
+        {
+            "status": "ONLINE" if not st["offline"] else "OFFLINE / DEMO",
+            "provider": st["provider"],
+            "model": st["model"],
+            "mode": st["mode"],
+            "memory": st["memory"],
+            "tools": f"{st.get('tool_count', '?')} enabled",
+            "browser": st["browser"],
+            "livekit": st["livekit"],
+            "telegram": st["telegram"],
+            "automations": st["automations"],
+            "workspace": st["workspace"],
+        }
+    )
     return 0
 
 
@@ -64,8 +73,10 @@ def cmd_test(passthrough: list[str]) -> int:
         print(f"\n{'=' * 70}\n▶ {test_file.name}\n{'=' * 70}")
         codes.append(subprocess.call([sys.executable, str(test_file), *passthrough]))
     ok = all(code == 0 for code in codes)
-    print(f"\n{'=' * 70}\n  {'✅ SAARE TESTS PASS' if ok else '⚠️ kuch tests fail hue'}"
-          f"  ({len(tests)} file(s))\n{'=' * 70}")
+    print(
+        f"\n{'=' * 70}\n  {'✅ SAARE TESTS PASS' if ok else '⚠️ kuch tests fail hue'}"
+        f"  ({len(tests)} file(s))\n{'=' * 70}"
+    )
     return 0 if ok else 1
 
 
@@ -111,7 +122,10 @@ def cmd_serve(args: list[str]) -> int:
 
     host = args[0] if args else S.API_HOST
     port = int(args[1]) if len(args) > 1 else S.API_PORT
-    print(f"🌐 {S.ASSISTANT_NAME} API + web console → http://{host}:{port}")
+    from .automation import scheduler as sch
+
+    sch.ensure_scheduler()  # web se bani automations bhi fire hon
+    print(f"🌐 {S.ASSISTANT_NAME} API + web console → http://{host}:{port} (⏰ scheduler on)")
     uvicorn.run("jarvis.api.server:app", host=host, port=port, log_level=S.LOG_LEVEL.lower())
     return 0
 

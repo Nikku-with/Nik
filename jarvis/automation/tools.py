@@ -7,6 +7,7 @@ Automation tools — agent inhe LangChain tools ki tarah call karta hai
     "wo automation band kar do"      → toggle_automation(ident, False)
     "abhi chala do"                  → run_automation(ident)
 """
+
 from __future__ import annotations
 
 from langchain_core.tools import tool
@@ -16,7 +17,7 @@ from . import scheduler as sch
 
 def _fmt(items: list[dict]) -> str:
     if not items:
-        return "📋 Koi automation set nahi hai. Bolo: \"har subah 8 baje mausam batao\""
+        return '📋 Koi automation set nahi hai. Bolo: "har subah 8 baje mausam batao"'
     lines = [f"⏰ {len(items)} automation(s):"]
     for a in items:
         state = "🟢 ON " if a["enabled"] else "🔴 OFF"
@@ -36,15 +37,25 @@ def create_automation(task: str, schedule: str, enable: bool = True) -> str:
     task: kya karna hai (poori Hinglish request, jaise "aaj ka mausam batao")
     schedule: "har subah 8 baje", "daily 18:30", "every 2h", "kal 6 PM", "har 30 minute"
     enable: False karo to save hoga par chale ga nahi.
+
+    Result usi channel par jayega jahan se banaya (Telegram → owner DM).
     """
-    res = sch.get_store().create(task, schedule, enabled=enable)
+    try:
+        from ..security.gate import current_surface
+
+        channel = current_surface()
+    except Exception:
+        channel = "cli"
+    res = sch.get_store().create(task, schedule, channel=channel, enabled=enable)
     if not res.get("ok"):
         return f"❌ {res['message']}"
     auto = res["automation"]
-    return (f"✅ Automation set: #{auto['id'][:8]}\n"
-            f"• Kab: {auto['schedule']} (next: {auto['next_run_str']})\n"
-            f"• Kya: {auto['task']}\n"
-            f"Manage: /automation list | /automation off {auto['id'][:8]}")
+    return (
+        f"✅ Automation set: #{auto['id'][:8]}\n"
+        f"• Kab: {auto['schedule']} (next: {auto['next_run_str']})\n"
+        f"• Kya: {auto['task']}\n"
+        f"Manage: /automation list | /automation off {auto['id'][:8]}"
+    )
 
 
 @tool
@@ -74,5 +85,4 @@ def cancel_automation(ident: str) -> str:
     return ("🗑️ " if res.get("ok") else "❌ ") + res["message"]
 
 
-AUTOMATION_TOOLS = [create_automation, list_automations, toggle_automation,
-                    run_automation, cancel_automation]
+AUTOMATION_TOOLS = [create_automation, list_automations, toggle_automation, run_automation, cancel_automation]

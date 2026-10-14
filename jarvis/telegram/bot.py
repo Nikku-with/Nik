@@ -880,6 +880,10 @@ def run_bot(poll_interval: float = 1.0) -> int:
     print(f"🤖 {S.ASSISTANT_NAME} Telegram bot live — {S.TELEGRAM_BOT_TOKEN[:10]}… "
           f"(owner: {S.TELEGRAM_OWNER_ID or 'auto-detect'})")
     print("   Telegram pe apne bot ko /start bhejo. Ctrl+C se band.")
+    from ..automation import scheduler as sch
+
+    sch.ensure_scheduler()  # Telegram se bani automations bhi fire hon
+    print("   ⏰ scheduler on — automations fire hongi.")
     app = build_application()
     app.run_polling(poll_interval=poll_interval, timeout=20, drop_pending_updates=True)
     return 0

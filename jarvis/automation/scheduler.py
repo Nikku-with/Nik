@@ -11,6 +11,7 @@ Owner bol sakta hai:
 Sab `workspace/automations.json` me persist hoti hain, process restart ke baad bhi zinda rehti hain.
 Scheduler ek daemon thread hai jo har 20 second tick karta hai (koi external dep nahi).
 """
+
 from __future__ import annotations
 
 import json
@@ -24,15 +25,15 @@ from typing import Any, Callable
 
 from ..config import AUTOMATION_FILE
 
-RUNNER: Callable[[str, str], str] | None = None   # (task_text, automation_id) → result text
+RUNNER: Callable[[str, str], str] | None = None  # (task_text, automation_id) → result text
 
 
 @dataclass
 class Automation:
     id: str
     task: str
-    schedule: str                     # human-readable: "daily 08:00" | "every 1h" | "once 2026-10-05 18:00"
-    kind: str = "daily"               # once | daily | hourly | interval
+    schedule: str  # human-readable: "daily 08:00" | "every 1h" | "once 2026-10-05 18:00"
+    kind: str = "daily"  # once | daily | hourly | interval
     interval_minutes: int = 0
     next_run: float = 0.0
     enabled: bool = True
@@ -67,14 +68,20 @@ def parse_schedule(text: str) -> dict[str, Any]:
     now = datetime.now()
 
     # every X minutes / hours
-    m = re.search(r"(?:every|har|each)\s*(\d+)?\s*"
-                  r"(m|min|mins|minute|minutes|घंट|h|hr|hrs|hour|hours|ghante|ghanta)\b", low)
+    m = re.search(
+        r"(?:every|har|each)\s*(\d+)?\s*"
+        r"(m|min|mins|minute|minutes|घंट|h|hr|hrs|hour|hours|ghante|ghanta)\b",
+        low,
+    )
     if m:
         count = int(m.group(1) or 1)
         unit = m.group(2)
         minutes = count if unit in ("m", "min", "mins", "minute", "minutes") else count * 60
-        return {"kind": "interval", "interval_minutes": max(1, minutes),
-                "schedule": f"every {count} {'min' if minutes < 60 else 'h'}"}
+        return {
+            "kind": "interval",
+            "interval_minutes": max(1, minutes),
+            "schedule": f"every {count} {'min' if minutes < 60 else 'h'}",
+        }
 
     # daily at HH:MM
     m = re.search(r"(?:daily|roz|har\s*din|every\s*day|subah|shaam|raat|morning|evening)", low)
@@ -121,8 +128,10 @@ def parse_schedule(text: str) -> dict[str, Any]:
             when += timedelta(days=1)
         return {"kind": "once", "at": when.timestamp(), "schedule": when.strftime("once %d %b %H:%M")}
 
-    return {"kind": "", "error": "schedule samajh nahi aaya — try: 'har subah 8 baje', 'every 2h', "
-                                 "'kal 6 PM', 'daily 18:30'"}
+    return {
+        "kind": "",
+        "error": "schedule samajh nahi aaya — try: 'har subah 8 baje', 'every 2h', 'kal 6 PM', 'daily 18:30'",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -143,9 +152,9 @@ class AutomationStore:
                     raw = json.loads(self.path.read_text(encoding="utf-8")) or {}
                     for item in raw.get("automations", []):
                         try:
-                            self._items[item["id"]] = Automation(**{
-                                k: v for k, v in item.items() if k in Automation.__dataclass_fields__
-                            })
+                            self._items[item["id"]] = Automation(
+                                **{k: v for k, v in item.items() if k in Automation.__dataclass_fields__}
+                            )
                         except Exception:
                             continue
             except Exception:
@@ -155,8 +164,10 @@ class AutomationStore:
         with self._lock:
             try:
                 self.path.parent.mkdir(parents=True, exist_ok=True)
-                payload = {"automations": [a.as_dict() for a in self._items.values()],
-                           "_updated_at": time.strftime("%Y-%m-%d %H:%M:%S")}
+                payload = {
+                    "automations": [a.as_dict() for a in self._items.values()],
+                    "_updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                }
                 self.path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
             except Exception:
                 pass
@@ -182,14 +193,24 @@ class AutomationStore:
         else:
             interval = 60
             next_run = now + 3600
-        auto = Automation(id=uuid.uuid4().hex[:12], task=task.strip(), schedule=spec["schedule"],
-                          kind=spec["kind"], interval_minutes=interval, next_run=next_run,
-                          enabled=enabled, channel=channel)
+        auto = Automation(
+            id=uuid.uuid4().hex[:12],
+            task=task.strip(),
+            schedule=spec["schedule"],
+            kind=spec["kind"],
+            interval_minutes=interval,
+            next_run=next_run,
+            enabled=enabled,
+            channel=channel,
+        )
         with self._lock:
             self._items[auto.id] = auto
         self.save()
-        return {"ok": True, "automation": auto.as_dict(),
-                "message": f"automation ban gayi #{auto.id[:8]} — {spec['schedule']} par: {auto.task[:70]}"}
+        return {
+            "ok": True,
+            "automation": auto.as_dict(),
+            "message": f"automation ban gayi #{auto.id[:8]} — {spec['schedule']} par: {auto.task[:70]}",
+        }
 
     def list(self, enabled_only: bool = False) -> list[dict[str, Any]]:
         with self._lock:
@@ -263,6 +284,85 @@ def get_store() -> AutomationStore:
     return _STORE
 
 
+def _run_sync(coro):
+    """Coroutine ko sync chalao — running loop ke andar/bahar dono safe."""
+    import asyncio
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    box: dict[str, Any] = {}
+
+    def _worker() -> None:
+        loop = asyncio.new_event_loop()
+        try:
+            box["value"] = loop.run_until_complete(coro)
+        except BaseException as exc:
+            box["error"] = exc
+        finally:
+            loop.close()
+
+    t = threading.Thread(target=_worker, name="automation-runner", daemon=True)
+    t.start()
+    t.join()
+    if "error" in box:
+        raise box["error"]
+    return box.get("value")
+
+
+def _default_runner(task: str, auto_id: str) -> str:
+    """Automation → wahi LangGraph agent (surface=automation)."""
+    from ..runtime.agent import run_agent
+
+    res = _run_sync(run_agent(task, session_id=f"automation:{auto_id}", surface="automation"))
+    return res.answer
+
+
+def ensure_scheduler(runner: Callable[[str, str], str] | None = None, interval: float = 20.0) -> dict[str, Any]:
+    """Scheduler ko agent se jod kar background me chalu karo (idempotent).
+
+    CLI / Telegram / serve — teeno entry points yahi bulate hain, taaki automation
+    kahin se bhi bane, fire zaroor ho ("automation anywhere").
+    """
+    global RUNNER
+    if runner is not None:
+        RUNNER = runner
+    elif RUNNER is None:
+        RUNNER = _default_runner
+    started = start_background(interval=interval)
+    st = status()
+    st["runner"] = "custom" if runner is not None else ("default" if started else "already-set")
+    st["started_now"] = started
+    return st
+
+
+def _deliver(auto: Automation, result: str) -> str:
+    """Result originating channel par pahunchhao (best-effort, run kabhi fail nahi).
+
+    channel telegram* → owner ke DM me message (bot token se, bot running hona zaroori nahi —
+    seedha Bot HTTP API). cli/api/voice → koi push nahi (list me last_result dikhta hai).
+    """
+    channel = (auto.channel or "").strip().lower()
+    if not channel.startswith("telegram"):
+        return result
+    try:
+        from ..config import settings as S
+        from ..tools.telegram_tools import _api_post
+
+        token = (S.TELEGRAM_BOT_TOKEN or "").strip()
+        owner = str(S.TELEGRAM_OWNER_ID or "").strip()
+        if not token or not owner:
+            return result + "\n(notify skip: Telegram token/owner set nahi)"
+        text = f"⏰ Automation #{auto.id[:8]} ({auto.schedule})\nTask: {auto.task[:200]}\n\n{result[:3000]}"
+        resp = _api_post(token, "sendMessage", {"chat_id": owner, "text": text})
+        if not resp.get("ok"):
+            return result + f"\n(notify fail: {str(resp.get('description', ''))[:100]})"
+        return result
+    except Exception as exc:
+        return result + f"\n(notify fail: {type(exc).__name__}: {str(exc)[:100]})"
+
+
 def run_now(ident: str) -> dict[str, Any]:
     """Automation ko turant chalao (schedule ka wait nahi)."""
     store = get_store()
@@ -283,8 +383,9 @@ def _execute(auto: Automation) -> str:
         # koi jawab na de to step skip + report (kabhi auto-approve nahi)
         with gate_context("automation"):
             out = RUNNER(auto.task, auto.id)
-        get_store().mark_run(auto, out or "(no output)")
-        return out or "(no output)"
+        out = _deliver(auto, out or "(no output)")
+        get_store().mark_run(auto, out)
+        return out
     except Exception as exc:
         get_store().mark_run(auto, "", error=str(exc))
         return f"(error: {exc})"

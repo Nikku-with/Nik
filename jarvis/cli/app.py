@@ -463,20 +463,7 @@ async def run_cli(session_id: str = "cli", show_reasoning: bool | None = None, o
     """Interactive REPL. `once` diya to sirf ek request chala kar exit."""
     from ..automation import scheduler as sch
 
-    # scheduler ko agent se jodo (automation → graph)
-    async def _runner(task: str, auto_id: str) -> str:
-        res = await run_agent(task, session_id=f"automation:{auto_id}", surface="automation")
-        return res.answer
-
-    def _runner_sync(task: str, auto_id: str) -> str:
-        try:
-            return asyncio.run(_runner(task, auto_id))
-        except RuntimeError:  # already running loop
-            loop = asyncio.new_event_loop()
-            return loop.run_until_complete(_runner(task, auto_id))
-
-    sch.RUNNER = _runner_sync
-    sch.start_background()
+    sch.ensure_scheduler()  # automation kahin se bhi bane — fire yahan se hoga
 
     if once:
         from . import pro_ui

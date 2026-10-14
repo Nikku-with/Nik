@@ -444,7 +444,10 @@ def main() -> int:
         return 1
     import uvicorn
 
-    print(f"\n🤖 {ASSISTANT_NAME} console → http://{API_HOST}:{API_PORT}\n")
+    from ..automation import scheduler as sch
+
+    sch.ensure_scheduler()
+    print(f"\n🤖 {ASSISTANT_NAME} console → http://{API_HOST}:{API_PORT} (⏰ scheduler on)\n")
     uvicorn.run(app, host=API_HOST, port=API_PORT, log_level="info")
     return 0
 
