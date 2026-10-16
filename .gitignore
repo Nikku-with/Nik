@@ -1,0 +1,51 @@
+# ============================================================================
+#  NikhilAI — git me kya NAHI jayega
+# ============================================================================
+# secrets (kabhi commit nahi)
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+secrets.json
+
+# runtime workspace (notes, memory, logs, screenshots, generated scripts)
+workspace/
+optimized/
+conversations/
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+*.log
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+.venv-*/
+venv/
+env/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# dspy / browser-use / caches
+.cache/
+.dspy_cache/
+.browser-use/
+chrome-profile/
+*.meta.json
+
+# editors / os
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# audit delivery artifact
+*.zip

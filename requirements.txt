@@ -1,0 +1,67 @@
+# ============================================================================
+#  NikhilAI — dependencies
+#  Install core/browser/API/Telegram dependencies with pip install -r requirements.txt.
+#  Desktop inputs are optional: pip install -e '.[desktop]'.
+#  Voice is a separate optional extra because upstream LiveKit/OpenAI pins conflict with Browser-Use.
+# ============================================================================
+
+# ---- agent core (LangChain + LangGraph) -----------------------------------
+langchain-core>=0.3
+langchain>=0.3
+langgraph>=0.2
+langchain-openai>=0.2          # OpenRouter + Groq + OpenAI + xAI (sab OpenAI-compatible)
+pydantic>=2.6
+pydantic-settings>=2.2
+python-dotenv>=1.0
+
+# ---- brain providers -------------------------------------------------------
+langchain-google-genai>=2.0,<3.0  # Gemini brain; compatible with Browser-Use's Google SDK pins
+# langchain-anthropic>=0.3     # optional — browser-use ke anthropic pin se conflict kar sakta hai
+# langchain-ollama>=0.2        # optional — local models
+
+# ---- web / research --------------------------------------------------------
+httpx>=0.27
+requests>=2.31
+beautifulsoup4>=4.12
+lxml>=5.0
+ddgs>=9.0                      # keyless multi-engine search (DDG/Bing/Brave/mojeek…)
+
+# ---- file intelligence (kisi bhi file ko padhna) ---------------------------
+pypdf>=5.0                     # PDF
+python-docx>=1.1               # Word
+openpyxl>=3.1                  # Excel
+python-pptx>=1.0               # PowerPoint (optional)
+Pillow>=10.0                   # image metadata / file intelligence
+rapidfuzz>=3.9                 # fuzzy file/app matching
+
+# ---- terminal UI -----------------------------------------------------------
+rich>=13.7
+
+# ---- browser automation ----------------------------------------------------
+browser-use>=0.13.11           # current Python API + `browser-use` CLI harness
+
+# ---- reasoning optimiser ---------------------------------------------------
+dspy>=3.0
+
+# ---- voice (LiveKit + Gemini Live) -----------------------------------------
+# Install separately in `.venv-voice` with `pip install -e '.[voice,gemini]'`.
+# LiveKit 1.8.x requires newer OpenAI/Google SDKs than browser-use 0.13.x pins;
+# combining both extras can silently downgrade the browser integration or conflict.
+
+# ---- Telegram bot ----------------------------------------------------------
+python-telegram-bot>=21.0
+
+# ---- HTTP API + web console ------------------------------------------------
+fastapi>=0.110
+uvicorn[standard]>=0.30
+
+# ---- dev (optional) --------------------------------------------------------
+# pytest>=8.0
+# ruff>=0.6
+
+# NOTE version conflicts ke baare me:
+#   browser-use kuch packages ko exact pin karta hai (openai / groq / google-genai / anthropic).
+#   Isliye Groq aur OpenRouter hum `langchain-openai` ke through chalate hain (same API),
+#   aur `langchain-groq` ki zaroorat nahi. Gemini ke liye `langchain-google-genai` use hota hai.
+#   Agar pip "dependency conflicts" warning de par import kaam kare — chalega (browser-use apne
+#   pinned versions maangta hai, hum compatible ranges use karte hain).
