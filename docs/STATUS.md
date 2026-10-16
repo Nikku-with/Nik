@@ -1,5 +1,26 @@
 # NikhilAI status, capabilities, and audit evidence
 
+> **Independent audit addendum — 2026-10-16.** The figures below were recorded by the
+> builder at commit `4387cce` on 2026-10-14 and are **stale**. Re-measured on the audited
+> tree:
+>
+> | Figure | Recorded here | Re-measured |
+> |---|---|---|
+> | `pytest -o addopts=""` | 355 passed | **455 passed** |
+> | `test_v23.py` | 147/147 | **153/153** |
+> | Seven harnesses total | 423/423 | **429/429** |
+> | `git archive` entries | 218 | **223** |
+>
+> `ruff check .`, `python -m compileall -q jarvis tests`, 99/99 registered tools and 18/18
+> skill packs were all re-confirmed. Note that `pytest -q` prints no pass/fail count,
+> because `pyproject.toml` sets `addopts = "-q"`; use `pytest -o addopts=""` when a count
+> is needed.
+>
+> A line-by-line audit of every claim in this document, the README and the skill files is
+> in [CLAIMS_AUDIT.md](CLAIMS_AUDIT.md). The **Not implemented / not wired / not verified**
+> list is in [CLAIMS_AUDIT.md §5](CLAIMS_AUDIT.md#5-not-implemented-not-wired-or-not-verified)
+> — read it before making a release claim.
+
 **Updated:** 2026-10-14 (Asia/Kolkata)
 
 **Snapshot:** Final code/test commit `4387cce` was checked on 2026-10-14: `pytest -q` passed, with the count-confirming run at `pytest -q -o addopts=''` reporting **355 passed**; Ruff, compileall, and all seven standalone acceptance harnesses passed. The final `git archive` ZIP was fresh-extracted, and its full suite and compileall passed as recorded below. Four FastAPI lifecycle deprecation warnings remain. Live external integrations remain unverified.

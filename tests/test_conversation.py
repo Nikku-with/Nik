@@ -40,8 +40,7 @@ def fake_clock() -> FakeClock:
 
 @pytest.fixture
 def windows(monkeypatch, fake_clock) -> FakeWindowManager:
-    from jarvis.tools import app_finder
-    from jarvis.tools import system_tools
+    from jarvis.tools import app_finder, system_tools
 
     wm = FakeWindowManager(clock=fake_clock)
     monkeypatch.setattr(ctypes, "windll", _WinDll(FakeUser32(wm)), raising=False)
@@ -116,7 +115,7 @@ async def test_twenty_five_casual_messages_cost_one_llm_call_each(models, window
     from jarvis.runtime import agent
 
     models.register("brain", SpyChatModel("brain"))
-    for index, text in enumerate(CASUAL_MESSAGES):
+    for text in CASUAL_MESSAGES:
         result = await agent.run_agent(text, session_id="casual", surface="cli_owner")
         assert result.status in {"chat", "failed"}, f"{text!r} → {result.status}: {result.answer}"
         assert not result.tool_evidence, f"{text!r} ran tools: {result.tool_evidence}"

@@ -59,7 +59,7 @@ The CLI also accepts one-shot free text: `python -m jarvis hy` or `python -m jar
 - **Safe self-improvement:** proposed unified diffs are saved for review; the tool never edits or executes NikhilAI source. Latency is bounded by fast-role routing and configured timeouts; provider billing estimates are not available offline.
 - **Skills:** eighteen workflow packs under `jarvis/skills/catalog/`; ten are the required verification/research/file/terminal/project/desktop/reporting/automation/memory/self-review workflows.
 
-Desktop examples, surface behavior, recorded verification evidence, and offline/live boundaries are in [docs/STATUS.md](docs/STATUS.md). System structure is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). See [features, requirements, and environment controls](docs/FEATURES_REQUIREMENTS_ENVIRONMENT.md) for the operator handoff.
+Desktop examples, surface behavior, recorded verification evidence, and offline/live boundaries are in [docs/STATUS.md](docs/STATUS.md). An independent audit of every claim in this README — verdict, evidence, and the list of what is not implemented or not verified — is in [docs/CLAIMS_AUDIT.md](docs/CLAIMS_AUDIT.md). System structure is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). See [features, requirements, and environment controls](docs/FEATURES_REQUIREMENTS_ENVIRONMENT.md) for the operator handoff.
 
 ## Dangerous-Command Gate
 
@@ -88,9 +88,12 @@ This project is an operator with shell, file, desktop, and browser capabilities�
 ```bash
 ruff check .
 python -m compileall -q jarvis tests
-pytest -q
+pytest -q                 # add -o addopts="" to print the pass/fail count
 python scripts/audit_tools.py
 ```
+
+`pytest -q` prints no count on this tree because `pyproject.toml` sets `addopts = "-q"`;
+`pytest -o addopts=""` restores it.
 
 Current verification evidence, capability notes, and offline/live boundaries are consolidated in [docs/STATUS.md](docs/STATUS.md). See [CHANGELOG.md](CHANGELOG.md) for changes in the active Round 2 audit.
 
