@@ -811,7 +811,11 @@ _CHAT_DIRECT_ACTION_REQUEST_RX = re.compile(
     r"rename|move|install|download|upload|search|find|browse|run|execute|send|create|make|build|click|press|"
     r"kholo|khol|kholke|krke|karke|kar\s+do|karo|banao|bana\s+do|likho|likh\s+do|hatao|chalao|bhejo|"
     r"dhundo|dhoondo)\b|\b(?:can|could|would)\s+you\s+(?:please\s+)?(?:open|close|launch|start|type|write|"
-    r"save|delete|remove|rename|move|install|download|upload|search|find|run|execute|send|create|make|build)\b",
+    r"save|delete|remove|rename|move|install|download|upload|search|find|run|execute|send|create|make|build)\b"
+    # "hata do", "band kar do", "bhej do", "daal do" — the split imperative is as common in
+    # Hinglish as the single verb, and the single-verb list above did not match it.
+    r"|\b(?:hata|hatana|band|bhej|bhejo|de|le|kar|karo|bana|likh|khol|chalao|daal|save|delete|remove|"
+    r"rename|move|copy|paste|undo|redo|refresh|restart|set|change|update|clear)\s+(?:do|de|dena|lo|lena)\b",
     re.I,
 )
 
@@ -837,6 +841,20 @@ def is_chat_request(text: str) -> bool:
         return True
     if _CHAT_GENERAL_QUESTION_RX.search(low):
         return True
+    # Short filler ("acha", "theek hai", "hmm", "aur batao") is not a task. Sending it through
+    # the full graph costs recall + route + plan + worker + synthesize + critic — the owner's
+    # 25-message casual session was paying that on almost every turn. Only apply this when the
+    # message is short, reads as no kind of command, and the desktop parser sees no action in
+    # it: `is_chat_request` runs *before* `_direct_app_request`, so an over-eager rule here
+    # would silently stop "notepad kholo" from ever reaching the desktop worker.
+    if len(low.split()) <= 5 and not _CHAT_DIRECT_ACTION_REQUEST_RX.search(low):
+        try:
+            from ..graph.workers.desktop_actions import detect_desktop_action
+
+            if not (detect_desktop_action(text) or {}).get("actions"):
+                return True
+        except Exception:
+            pass
     # An unfamiliar imperative/request is safer in the task pipeline than as an unverified chat answer.
     return False
 
@@ -998,14 +1016,8 @@ async def _run_agent_body(text, session_id, surface, use_fast_path, voice_output
             _emit_final_status(emit, fast)
             return fast
 
-        if is_chat_request(text):
-            chat = await _chat_fast_path(text, session_id, surface, emit)
-            chat.seconds = time.time() - started
-            _post_run(chat, session_id, emit=emit)
-            chat.seconds = time.time() - started
-            _emit_final_status(emit, chat)
-            return chat
-
+        # A question we just asked owns the next turn. The answer is often a bare noun
+        # ("notepad", "requests") which the router would happily read as small talk.
         resolved = await _apply_pending_app_clarification(text, session_id, surface, emit)
         if resolved is not None:
             resolved.seconds = time.time() - started
@@ -1013,6 +1025,14 @@ async def _run_agent_body(text, session_id, surface, use_fast_path, voice_output
             resolved.seconds = time.time() - started
             _emit_final_status(emit, resolved)
             return resolved
+
+        if is_chat_request(text):
+            chat = await _chat_fast_path(text, session_id, surface, emit)
+            chat.seconds = time.time() - started
+            _post_run(chat, session_id, emit=emit)
+            chat.seconds = time.time() - started
+            _emit_final_status(emit, chat)
+            return chat
 
         direct = await _direct_app_request(text, session_id, surface, emit)
         if direct is not None:

@@ -23,6 +23,7 @@ from ..runtime.progress import ProgressEvent
 try:
     from rich.console import Console, Group
     from rich.live import Live
+    from rich.markup import escape
     from rich.panel import Panel
     from rich.table import Table
     from rich.text import Text
@@ -31,6 +32,9 @@ try:
 except Exception:  # pragma: no cover
     HAS_RICH = False
     Console = Group = Live = Panel = Table = Text = None  # type: ignore
+
+    def escape(text: str) -> str:  # type: ignore[misc]
+        return str(text)
 
 ACCENT = "bright_cyan"
 OK = "green"
@@ -122,7 +126,7 @@ class Dashboard:
             self.current = ev.text or "warning"
         elif ev.kind == "error":
             self.status = "error"
-            self.current = f"error: {ev.text[:70]}"
+            self.current = f"error: {ev.text[:70]}"  # escaped at render time
         elif ev.kind == "done":
             self.status = ev.status or "done"
             self.current = ev.text or "request finished"
@@ -140,16 +144,16 @@ class Dashboard:
         import time as _t
 
         elapsed = f"{_t.time() - self.started:.1f}s" if self.started else "0.0s"
-        left = Text.from_markup(f"[bold {ACCENT}]◆ {self.header.get('name', 'NIKHILAI')}[/] "
-                                f"[{DIM}]v{self.header.get('version', '2.3')}[/]")
-        mid = Text.from_markup(f"[{DIM}]interface[/] [bold]{self.header.get('interface', 'CLI / TEXT')}[/]"
-                               f" [{DIM}]• brain[/] [bold]{self.header.get('model', '-')}[/]"
-                               f" [{DIM}]• fast[/] [bold]{self.header.get('fast_model', '-')}[/]"
-                               f" [{DIM}]• tools[/] [bold]{self.header.get('tools', '?')} registered[/]"
-                               f" [{DIM}]• memory[/] [bold]{self.header.get('memory', '?')}[/]")
+        left = Text.from_markup(f"[bold {ACCENT}]◆ {escape(self.header.get('name', 'NIKHILAI'))}[/] "
+                                f"[{DIM}]v{escape(self.header.get('version', '2.3'))}[/]")
+        mid = Text.from_markup(f"[{DIM}]interface[/] [bold]{escape(self.header.get('interface', 'CLI / TEXT'))}[/]"
+                               f" [{DIM}]• brain[/] [bold]{escape(self.header.get('model', '-'))}[/]"
+                               f" [{DIM}]• fast[/] [bold]{escape(self.header.get('fast_model', '-'))}[/]"
+                               f" [{DIM}]• tools[/] [bold]{escape(self.header.get('tools', '?'))} registered[/]"
+                               f" [{DIM}]• memory[/] [bold]{escape(self.header.get('memory', '?'))}[/]")
         status = self.header.get("status", "DEMO")
-        right = Text.from_markup(f"[{DIM}]{self.header.get('provider', '-')}[/] "
-                                 f"[bold {OK if self.header.get('live') else WARN}]{status}[/] "
+        right = Text.from_markup(f"[{DIM}]{escape(self.header.get('provider', '-'))}[/] "
+                                 f"[bold {OK if self.header.get('live') else WARN}]{escape(status)}[/] "
                                  f"[{DIM}]• {elapsed}[/]")
         t.add_row(left, mid, right)
         return Panel(t, border_style=ACCENT, padding=(0, 1))
@@ -157,14 +161,14 @@ class Dashboard:
     def _stream(self) -> Any:
         lines: list[Any] = []
         spin = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"[int(__import__("time").time() * 10) % 10]
-        lines.append(Text.from_markup(f"[bold {ACCENT}]{spin} {self.current}[/]"))
+        lines.append(Text.from_markup(f"[bold {ACCENT}]{spin} {escape(self.current)}[/]"))
         lines.append(Text(""))
         for ev in self.events[-self.max_events:]:
             icon = KIND_ICON.get(ev.kind, "•")
             style = KIND_STYLE.get(ev.kind, DIM)
             text = (ev.text or ev.tool or "")[:96]
             ms = f" [{DIM}]{ev.ms}ms[/]" if ev.ms else ""
-            lines.append(Text.from_markup(f"{icon} [{style}]{text}[/]{ms}"))
+            lines.append(Text.from_markup(f"{icon} [{style}]{escape(text)}[/]{ms}"))
         if not self.events:
             lines.append(Text.from_markup(f"[{DIM}]…[/]"))
         return Panel(Group(*lines), title="[bold]⚡ Live activity[/]", border_style="blue",
@@ -176,19 +180,19 @@ class Dashboard:
         if self.plan:
             t.add_row(Text.from_markup(f"[bold]📋 Plan[/] [{DIM}]({len(self.plan)})[/]"))
             for i, step in enumerate(self.plan[:6], 1):
-                t.add_row(Text.from_markup(f"[{DIM}]{i}.[/] {str(step)[:40]}"))
+                t.add_row(Text.from_markup(f"[{DIM}]{i}.[/] {escape(str(step)[:40])}"))
             t.add_row(Text(""))
         if self.models_used:
             t.add_row(Text.from_markup(f"[bold]🤖 Model calls[/] [{DIM}]({len(self.models_used)})[/]"))
             for name, status, ms in self.models_used[-5:]:
                 icon = "✅" if status == "ok" else "❌" if status == "fail" else "⏳"
                 timing = f" {ms}ms" if ms else ""
-                t.add_row(Text.from_markup(f"{icon} {name[:24]} [{DIM}]{status}{timing}[/]"))
+                t.add_row(Text.from_markup(f"{icon} {escape(name[:24])} [{DIM}]{escape(status)}{timing}[/]"))
         if self.tools_used:
             t.add_row(Text.from_markup(f"[bold]🛠️ Tool calls[/] [{DIM}]({len(self.tools_used)})[/]"))
             for name, status, ms in self.tools_used[-6:]:
                 icon = "✅" if status == "ok" else "❌" if status == "fail" else "⚠️"
-                t.add_row(Text.from_markup(f"{icon} {name[:26]} [{DIM}]{status} • {ms}ms[/]"))
+                t.add_row(Text.from_markup(f"{icon} {escape(name[:26])} [{DIM}]{escape(status)} • {ms}ms[/]"))
         if not self.plan and not self.tools_used and not self.models_used:
             t.add_row(Text.from_markup(f"[{DIM}]Waiting for a real plan, model call, or tool event…[/]"))
         return Panel(t, title="[bold]🧭 Context[/]", border_style="magenta", padding=(0, 1))
@@ -312,7 +316,7 @@ def key_menu(title: str, items: list[tuple[str, str, Callable]], subtitle: str =
         for i, (hot, label, _fn) in enumerate(items):
             marker = f"[bold {ACCENT}]▶[/]" if i == idx else " "
             style = f"bold {ACCENT}" if i == idx else ""
-            body.add_row(Text.from_markup(f" {marker} [{style}][{hot}] {label}[/]"))
+            body.add_row(Text.from_markup(f" {marker} [{style}][{hot}] {escape(label)}[/]"))
         panel = Panel(body, title=f"[bold]{title}[/]", subtitle=subtitle or "[esc] wapas",
                       border_style=ACCENT, padding=(0, 1))
         console.print(panel)

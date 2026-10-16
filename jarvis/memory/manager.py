@@ -32,14 +32,21 @@ KINDS = ("fact", "preference", "profile", "episode", "task", "note", "setting")
 # do memory ko duplicate maanne ka threshold (0..1)
 DUP_THRESHOLD = 0.86
 _SENSITIVE_RX = re.compile(
-    r"\b(?:password|passcode|secret|aadhaar|pan card|bank account|account number|credit card|debit card|"
+    r"\b(?:password|passcode|passphrase|secret|aadhaar|aadhar|pan card|bank account|account number|"
+    r"credit card|debit card|card number|card no|cvv|cvc|otp|one time password|"
+    r"api key|api token|access token|private key|secret key|auth token|bearer token|"
     r"salary|income|diagnosis|medical|medicine|medication|allerg(?:y|ic)|religion|political affiliation|"
-    r"sexual orientation|precise address|home address|passport number|health condition|mental health)\b", re.I
+    r"sexual orientation|precise address|home address|house address|mera address|mere address|my address|"
+    r"passport|driving licen[cs]e|social security|ssn|health condition|mental health)\b", re.I
 )
+# A 13–19 digit run (with or without spaces/dashes) is a card or account number whatever
+# the surrounding words are — "mera card number 4111 1111 1111 1111 hai" matched no keyword.
+_LONG_NUMBER_RX = re.compile(r"(?:\d[ \-]?){13,19}")
 
 
 def is_sensitive_fact(text: str) -> bool:
-    return bool(_SENSITIVE_RX.search(text or ""))
+    body = text or ""
+    return bool(_SENSITIVE_RX.search(body) or _LONG_NUMBER_RX.search(body))
 
 
 _TRIGGERS = {

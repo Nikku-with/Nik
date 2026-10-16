@@ -168,7 +168,7 @@ Poore strongly-connected components: 1; sabse bade me 56 modules.
 | module | lines |
 |---|---|
 | `jarvis.tools.desktop` | 1353 |
-| `jarvis.runtime.agent` | 1217 |
+| `jarvis.runtime.agent` | 1237 |
 | `jarvis.tools.browser_tools` | 1024 |
 | `jarvis.telegram.bot` | 974 |
 | `jarvis.security.gate` | 931 |
