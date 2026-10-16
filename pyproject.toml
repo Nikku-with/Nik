@@ -1,0 +1,101 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nikhilai"
+version = "2.3.0"
+description = "NikhilAI — local/VM-first autonomous AI operator (LangGraph + LangChain + Browser-Use + DSPy) with CLI, realtime voice and Telegram control"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Nikhil Mehra" }]
+keywords = ["ai-agent", "langgraph", "langchain", "browser-use", "livekit", "telegram-bot", "automation", "dspy"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "License :: OSI Approved :: MIT License",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Environment :: Console",
+]
+
+# Core runtime — iske bina kuch nahi chalta
+dependencies = [
+  # agent core
+  "langchain-core>=0.3",
+  "langchain>=0.3",
+  "langgraph>=0.2",
+  "langchain-openai>=0.2",              # OpenRouter + Groq (OpenAI-compatible) + OpenAI + xAI
+  "pydantic>=2.6",
+  # HTTP / parsing
+  "httpx>=0.27",
+  "requests>=2.31",
+  "beautifulsoup4>=4.12",
+  "lxml>=5.0",
+  "python-dotenv>=1.0",
+  "ddgs>=9.0",                          # keyless multi-engine search
+  # terminal UI
+  "rich>=13.7",
+  # file intelligence
+  "pypdf>=5.0",
+  "python-docx>=1.1",
+  "openpyxl>=3.1",
+  "python-pptx>=1.0",
+  "Pillow>=10.0",
+  "rapidfuzz>=3.9",
+  # reasoning layer — graph nodes isi ko use karte hain (fallback bhi hai, par default core)
+  "dspy>=3.0",
+]
+
+[project.optional-dependencies]
+# Gemini brain + Gemini Live voice
+gemini = ["langchain-google-genai>=2.0,<3.0"]
+# Realtime voice (LiveKit + Gemini Live)
+voice = ["livekit-agents[google]>=1.8.0", "livekit-plugins-google>=1.8.0", "livekit-plugins-silero>=1.8.0"]
+# Telegram control
+telegram = ["python-telegram-bot>=21.0"]
+# Browser automation (Python API + CLI harness)
+browser = ["browser-use>=0.13.11"]
+# Reasoning optimiser (ab core dependency hai; ye extra backwards-compat ke liye rakha hai)
+dspy = ["dspy>=3.0"]
+# Web API + console
+api = ["fastapi>=0.110", "uvicorn[standard]>=0.30"]
+# Baaki providers
+extras = ["langchain-anthropic>=0.3", "langchain-ollama>=0.2"]
+# Optional but nice: smoother typing/hotkey/screenshot (native fallback har OS me hai)
+desktop = ["pyautogui>=0.9.54", "pygetwindow>=0.0.9", "pynput>=1.7", "pyperclip>=1.8"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.6"]
+
+[project.scripts]
+nikhilai = "jarvis.__main__:main"
+
+[tool.setuptools]
+include-package-data = true
+
+# BUG FIX: pehle `packages = ["jarvis"]` tha — isse jarvis.tools / jarvis.graph jaise
+# saare subpackages install se bahar reh jaate the (pip install . ke baad import fail).
+[tool.setuptools.packages.find]
+include = ["jarvis*"]
+namespaces = false
+
+# SKILL.md catalog package ke andar hai → wheel/sdist me folder structure ke saath aata hai
+# (pehle data-files use kiya tha, usme saari SKILL.md ek hi naam par collide ho jaati thin).
+[tool.setuptools.package-data]
+jarvis = ["py.typed"]
+"jarvis.skills" = ["catalog/**/*.md"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+exclude = ["workspace", "optimized", ".venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = ["E501", "B008", "E402"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+asyncio_mode = "auto"
