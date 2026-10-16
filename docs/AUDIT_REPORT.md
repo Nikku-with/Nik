@@ -19,7 +19,7 @@
 | Tools jinke koi automatic runtime path hai | 76 | **83** (+4 documented manual-only) |
 | Dead modules | 0 | **0** |
 | Hard import cycles | 0 | **0** |
-| `git archive` ZIP | — | **225 entries / 186 files**, hygiene clean |
+| `git archive` ZIP | — | **227 entries / 187 files**, hygiene clean |
 | Naye test files | — | `test_live_replay.py`, `test_wiring.py`, `test_chaos.py`, `test_conversation.py`, `test_claims.py` + `scripts/wiring_map.py` |
 
 Baseline me `test_v23.py` **146/147** tha — ek check fail ho raha tha (env-coupling: `BRAIN_PROVIDER` aur `config.runtime` dono set hone chahiye). Ab **153/153**.
@@ -36,7 +36,7 @@ Baseline me `test_v23.py` **146/147** tha — ek check fail ho raha tha (env-cou
 | 4 | Chaos / failure-injection matrix (`tests/test_chaos.py`) | **42 tests**; 3 aur defects nikle |
 | 5 | Rich UI + conversation limits + memory + Telegram (`tests/test_conversation.py`) | **27 tests**; 5 aur defects nikle |
 | 6 | Claims audit (README / docs / SKILL.md / prompts) → `docs/CLAIMS_AUDIT.md` | 39 claims: 32 TRUE, 2 PARTIAL, 3 stale, 1 FALSE |
-| 7 | Fresh `git archive` ZIP pe sab dobara chalaya | 482 passed, ruff clean, compileall clean, 429/429 harnesses |
+| 7 | Fresh ZIP se sab dobara chalaya | 482 passed, ruff clean, compileall clean, 429/429 harnesses, wiring 99/70/83, tools 99/0/0 |
 
 ---
 
@@ -136,6 +136,29 @@ Ek aur claim reproduce nahi ho payi: "177-file secret scan" — tree me 151 Pyth
 **13 fix hue, 3 khule.** Khule hue teeno chhote hain aur document kar diye gaye hain.
 
 ---
+
+## 7b. Shipped ZIP — kya hai aur kaise verify hua
+
+**File:** `NikhilAI_Jarvis_audited_2026-10-16.zip` (636 KB) — repository root pe hai.
+`git archive --format=zip --prefix=NikhilAI_Jarvis_audited/ HEAD` se bana hai, to ye apni
+alag directory me extract hota hai. Isme `docs/` ke saath 7 documents hain — is report ke
+saath `CLAIMS_AUDIT.md` aur `WIRING_MAP.md` bhi.
+
+Isi ZIP ko ek clean temporary directory me extract karke dobara verify kiya gaya:
+
+| Check | Result |
+|---|---|
+| `unzip -l` entries | **227**; extract hone ke baad **187 files** |
+| ZIP hygiene | koi `__pycache__`, `*.pyc`, `.env`, `.git`, `*.egg-info`, `workspace/` ya andar wala ZIP nahi |
+| `ruff check .` | All checks passed |
+| `python -m compileall -q jarvis tests` | passed |
+| `pytest -o addopts=""` | **482 passed** |
+| 7 harnesses | 97 + 153 + 63 + 49 + 21 + 17 + 29 = **429/429** |
+| `scripts/wiring_map.py --check` | 99 tools, 70 tested, 83 reachable, 0 dead modules, 0 duplicates, 0 hard cycles |
+| `scripts/audit_tools.py` | 99 callable · 0 warn · 0 broken — PASS |
+
+Ek baat dhyan me rakhein: `pytest -q` count print **nahi** karta, kyunki `pyproject.toml`
+me `addopts = "-q"` set hai. Count chahiye to `pytest -o addopts=""` chalayein.
 
 ## 8. Jo verify NAHI kiya ja sakta (owner ki Windows VM chahiye)
 
