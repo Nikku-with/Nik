@@ -9,7 +9,7 @@
 > | `pytest -o addopts=""` | 355 passed | **455 passed** |
 > | `test_v23.py` | 147/147 | **153/153** |
 > | Seven harnesses total | 423/423 | **429/429** |
-> | `git archive` entries | 218 | **223** |
+> | `git archive` ZIP entries | 218 | **225** |
 >
 > `ruff check .`, `python -m compileall -q jarvis tests`, 99/99 registered tools and 18/18
 > skill packs were all re-confirmed. Note that `pytest -q` prints no pass/fail count,

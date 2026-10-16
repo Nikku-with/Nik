@@ -50,7 +50,7 @@ Counts in this document were produced on the audited tree, not copied from STATU
 |---|---|---|---|
 | 25 | "`pytest -q -o addopts=''` reporting **355 passed**" | **Stale** | The audited tree reports **455 passed**. The figure was correct for commit `4387cce`; it is not the current number. |
 | 26 | "`test_v23.py` 147/147 … **423/423 checks**" | **Stale** | `test_v23.py` is **153/153**; the seven harnesses total **429/429** (97 + 153 + 63 + 49 + 21 + 17 + 29). |
-| 27 | "The 218-entry release ZIP is built with `git archive`" | **Stale** | `git archive HEAD \| tar -t` now lists **223** entries; `git ls-files` lists 184 tracked files. |
+| 27 | "The 218-entry release ZIP is built with `git archive`" | **Stale** | A fresh `unzip -l` on `git archive --format=zip HEAD` lists **225** entries (186 files once extracted); `git ls-files` lists 184 tracked files. |
 | 28 | "the 177-file secret scan was clean" | NOT REPRODUCIBLE | The tree has 151 Python files. The 177 figure likely counts all tracked files at that commit. A fresh secret scan of the current tree found no credentials; see §4. |
 | 29 | "Registered-tool audit — 99 callable, 0 warnings, 0 broken" | TRUE | Re-ran `scripts/audit_tools.py`: **99 callable · 0 warn · 0 broken · PASS**. |
 | 30 | "Repository audit — 18 pass, 1 optional warning, 0 fail" | TRUE | Re-ran `scripts/audit.py`: **18 pass · 1 warnings · 0 fail**. Sole warning: `browser-use` python package and CLI absent. |
@@ -93,6 +93,21 @@ Counts in this document were produced on the audited tree, not copied from STATU
 | D-16 | `graph/nodes.py` | binds `get_chat_model` at import time, so runtime provider switches do not reach the graph | **Open** — low impact; surfaced while writing the chaos tests |
 
 ---
+
+## 4b. Fresh-extraction verification (step 7)
+
+The audited tree was packaged with `git archive --format=zip HEAD`, extracted into a
+clean directory, and re-verified there with no workspace caches:
+
+| Check | Result |
+|---|---|
+| `unzip -l` entry count | 225 entries; 186 files after extraction |
+| Archive hygiene | no `__pycache__`, `*.pyc`, `.env`, `.git`, `*.egg-info` or `workspace/` |
+| `ruff check .` | All checks passed |
+| `python -m compileall -q jarvis tests` | passed |
+| `pytest -o addopts=""` | **482 passed** |
+| Seven harnesses | 97 + 153 + 63 + 49 + 21 + 17 + 29 = **429/429** |
+| `scripts/wiring_map.py --check` | 99 tools, 70 tested, 83 reachable, 0 dead modules, 0 duplicates, 0 hard cycles |
 
 ## 5. Not implemented, not wired, or not verified
 
