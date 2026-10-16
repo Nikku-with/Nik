@@ -46,3 +46,6 @@ chrome-profile/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# audit delivery artifact
+*.zip
